@@ -1,0 +1,23 @@
+{
+  "$comment": "Example project config (.sca.json). Turn whole rule sets on/off, override single rules, and record deviations (accepted findings with a reason).",
+  "ruleSets": {
+    "misra-c-2012": true,
+    "his-metrics": true,
+    "runtime-bugfinder": true,
+    "cert-c": false
+  },
+  "rules": {
+    "misra-c-2012:15.5": false,
+    "his-metrics:cyclomatic-complexity": { "enabled": true, "max": 10 }
+  },
+  "deviations": [
+    {
+      "rule": "misra-c-2012:11.5",
+      "file": "src/drivers/can.c",
+      "line": 42,
+      "reason": "Cast required by HAL API; pointer alignment verified by design review DR-17.",
+      "approvedBy": "safety-manager",
+      "date": "2026-11-11"
+    }
+  ]
+}

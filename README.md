@@ -8,40 +8,92 @@ SCA is a **VS Code extension**.
 
 > Status: empty extension skeleton. Activates on C/C++ files and offers `SCA: Show Info`. No analysis yet.
 
-## Layout
-```
-src/extension.ts          extension entry point (VS Code API)
-src/core/                 pure analyzer logic, no VS Code dependency
-src/test/unit/            fast Mocha tests for src/core (no VS Code)
-src/test/integration/     tests inside a real VS Code instance
-tests/samples/            C/C++ inputs with expected findings (also the integration test workspace)
-docs/                     user documentation
-.vscode-test.mjs          integration test config (@vscode/test-cli)
-```
+## Contents
+- [Quick install with `installer.ps1`](#quick-install-with-installerps1) ← start here
+- [Installation for development — step by step](#installation-for-development--step-by-step)
+- [Commands (reference)](#commands-reference)
+- [Layout](#layout)
 
-## Quick install (Windows, one script)
+## Quick install with `installer.ps1`
 
-Needs Git, Node.js 22+ and VS Code (see Step 1 below). Then:
+`installer.ps1` builds SCA and installs it into your normal VS Code with **one command**.
+After it finishes, SCA is available in every VS Code window — no F5, no development window.
+
+### 1. Requirements (install once)
+- **Git** — https://git-scm.com/downloads
+- **Node.js 22 or newer** — https://nodejs.org
+- **VS Code 1.100 or newer** — https://code.visualstudio.com (keep *"Add to PATH"* checked during setup)
+
+Restart PowerShell after installing them.
+
+### 2. Download SCA
+Open **PowerShell** in the folder where you keep projects:
 ```powershell
 git clone https://github.com/Tomasi12/sca.git
 ```
 ```powershell
 cd sca
 ```
+
+### 3. Run the installer
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\installer.ps1
 ```
-The script checks the prerequisites, installs dependencies, builds `sca.vsix` and installs it into VS Code.
-Afterwards reload VS Code, open a `.c` file and run **SCA: Show Info**.
+`-ExecutionPolicy Bypass` allows this one script to run. It only applies to this run and does **not** change your Windows settings.
 
-| Option | What it does |
+What the script does, in order:
+
+| # | Step | What you see |
+|---|---|---|
+| 1 | Checks Node.js, npm and VS Code (`code`) | `OK  Node.js v24...`, `OK  npm ...`, `OK  VS Code ...` |
+| 2 | Installs dependencies (`npm ci`) | `OK  Dependencies installed` |
+| 3 | *(only with `-RunTests`)* runs unit + integration tests | `OK  All tests passed` |
+| 4 | Builds the extension file `sca.vsix` | `OK  Created ...\sca.vsix` |
+| 5 | Installs `sca.vsix` into VS Code and verifies it | `OK  Installed tomasi12.sca@0.0.1` |
+
+It ends with **`SCA is installed.`** If any step fails, it stops and prints a red `ERROR:` line telling you what to fix.
+
+### 4. Use SCA in VS Code
+1. If VS Code was already open: `Ctrl+Shift+P` → **Developer: Reload Window** (or restart VS Code).
+2. Open any `.c` or `.cpp` file.
+3. `Ctrl+Shift+P` → **SCA: Show Info** → message *"SCA is active. Languages: c, cpp."* ✅
+
+You can also check it in the Extensions view (`Ctrl+Shift+X`): search **SCA**.
+
+### Options
+| Command | What it does |
 |---|---|
-| `-RunTests` | Run unit + integration tests before installing |
-| `-Uninstall` | Remove SCA from VS Code |
-| `-CodeCommand code-insiders` | Install into VS Code Insiders |
+| `powershell -ExecutionPolicy Bypass -File .\installer.ps1` | Build and install (normal use) |
+| `powershell -ExecutionPolicy Bypass -File .\installer.ps1 -RunTests` | Run all tests first, install only if they pass (slower; first run downloads a test VS Code, ~1 GB on disk) |
+| `powershell -ExecutionPolicy Bypass -File .\installer.ps1 -Uninstall` | Remove SCA from VS Code |
+| `powershell -ExecutionPolicy Bypass -File .\installer.ps1 -CodeCommand code-insiders` | Install into VS Code Insiders instead |
 
-`-ExecutionPolicy Bypass` only applies to this one run; it does not change your system settings.
-To update SCA later: `git pull`, then run `installer.ps1` again.
+Show the built-in help:
+```powershell
+Get-Help .\installer.ps1 -Detailed
+```
+
+### Update to a new version
+```powershell
+git pull
+```
+```powershell
+powershell -ExecutionPolicy Bypass -File .\installer.ps1
+```
+The installer replaces the old version (`--force`). Reload VS Code afterwards.
+
+### Installer troubleshooting
+| Message | Fix |
+|---|---|
+| `running scripts is disabled on this system` | You started it as `.\installer.ps1`. Use the full command with `-ExecutionPolicy Bypass`. |
+| `ERROR: Node.js not found` / `too old` | Install Node.js 22+ from https://nodejs.org, restart PowerShell. |
+| `ERROR: 'code' not found` | Reinstall VS Code with *"Add to PATH"* checked, restart PowerShell. |
+| `ERROR: package.json not found` | Run the script from inside the `sca` folder (`cd sca`). |
+| `ERROR: npm ci failed` | Check your internet / proxy, then run the installer again. |
+| SCA not visible after install | Reload the VS Code window (`Developer: Reload Window`). |
+
+> Not on Windows? Use the development steps below, or run `npm ci`, `npm run package` and
+> `code --install-extension sca.vsix` manually.
 
 ## Installation for development — step by step
 
@@ -130,6 +182,19 @@ npm test              # compile + lint + integration tests in a downloaded VS Co
 npm run package       # build sca.vsix (installable extension file)
 ```
 See [docs/tech-stack.md](docs/tech-stack.md) for tools and versions.
+
+## Layout
+```
+installer.ps1             one-step build + install into VS Code (Windows)
+catalog/                  rule catalog (rule sets, ISO 26262 mapping) + coverage presentation
+src/extension.ts          extension entry point (VS Code API)
+src/core/                 pure analyzer logic, no VS Code dependency
+src/test/unit/            fast Mocha tests for src/core (no VS Code)
+src/test/integration/     tests inside a real VS Code instance
+tests/samples/            C/C++ inputs with expected findings (also the integration test workspace)
+docs/                     user documentation
+.vscode-test.mjs          integration test config (@vscode/test-cli)
+```
 
 ## Goals
 - Fast, incremental feedback inside the editor (LSP).

@@ -1,0 +1,19 @@
+{
+  "$comment": "Mapping of ISO 26262 (2018) Part 6 software topics to SCA rule sets. Topic names are paraphrased; check exact tables and ASIL ratings in your licensed copy of the standard.",
+  "version": 1,
+  "topics": [
+    { "id": "low-complexity",           "part": "6", "area": "coding guidelines", "name": "Enforcement of low complexity",                "coverage": "full",        "ruleSets": ["his-metrics"] },
+    { "id": "language-subset",          "part": "6", "area": "coding guidelines", "name": "Use of a language subset",                     "coverage": "partial",     "ruleSets": ["misra-c-2012", "misra-c-2023", "misra-cpp-2023", "autosar-cpp14"] },
+    { "id": "strong-typing",            "part": "6", "area": "coding guidelines", "name": "Enforcement of strong typing",                 "coverage": "partial",     "ruleSets": ["misra-c-2012", "misra-c-2023", "misra-cpp-2023"] },
+    { "id": "defensive-implementation", "part": "6", "area": "coding guidelines", "name": "Defensive implementation techniques",          "coverage": "partial",     "ruleSets": ["misra-c-2012", "cert-c", "cert-cpp", "iso-ts-17961"] },
+    { "id": "design-principles",        "part": "6", "area": "coding guidelines", "name": "Use of established design principles",         "coverage": "partial",     "ruleSets": ["misra-c-2012", "sca-own"] },
+    { "id": "style-guide",              "part": "6", "area": "coding guidelines", "name": "Use of style guides",                          "coverage": "full",        "ruleSets": ["sca-own"] },
+    { "id": "naming-conventions",       "part": "6", "area": "coding guidelines", "name": "Use of naming conventions",                    "coverage": "full",        "ruleSets": ["sca-own"] },
+    { "id": "concurrency",              "part": "6", "area": "coding guidelines", "name": "Concurrency aspects",                          "coverage": "not-covered", "ruleSets": ["concurrency"] },
+    { "id": "static-analysis",          "part": "6", "area": "unit verification", "name": "Static code analysis",                         "coverage": "partial",     "ruleSets": ["runtime-bugfinder", "cert-c", "cert-cpp", "cwe"] },
+    { "id": "control-flow-analysis",    "part": "6", "area": "unit verification", "name": "Control flow analysis",                        "coverage": "partial",     "ruleSets": ["runtime-bugfinder"] },
+    { "id": "data-flow-analysis",       "part": "6", "area": "unit verification", "name": "Data flow analysis",                           "coverage": "partial",     "ruleSets": ["runtime-bugfinder"] },
+    { "id": "abstract-interpretation",  "part": "6", "area": "unit verification", "name": "Static analysis based on abstract interpretation", "coverage": "not-covered", "ruleSets": ["runtime-proof"] },
+    { "id": "tool-qualification",       "part": "8", "area": "tool confidence",   "name": "Confidence in the use of software tools",      "coverage": "not-covered", "ruleSets": [] }
+  ]
+}

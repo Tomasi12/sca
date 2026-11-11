@@ -1,0 +1,174 @@
+{
+  "$comment": "SCA rule catalog - rule sets. 'coverage' is the TARGET coverage we can reach with the listed backends. 'implemented' says whether SCA already runs it. Descriptions are our own words; official rule texts are copyrighted and not included.",
+  "version": 1,
+  "coverageLevels": {
+    "full": "All checkable rules of the set can be covered.",
+    "partial": "A useful subset can be covered; the rest is missing or approximated.",
+    "planned": "Not covered by existing tools; needs our own checks (later phase).",
+    "not-covered": "Out of scope for now - see 'reason'."
+  },
+  "backends": {
+    "sca-native": "Our own checks inside SCA (TypeScript or native engine).",
+    "clang-tidy": "LLVM clang-tidy (Apache-2.0 with LLVM exception).",
+    "clang-analyzer": "Clang Static Analyzer, path-sensitive bug finding (Apache-2.0 with LLVM exception).",
+    "cppcheck": "Cppcheck core checks (GPL-3.0, run as a separate process only).",
+    "cppcheck-misra": "Cppcheck MISRA C addon (GPL-3.0, separate process; users supply rule texts from their own MISRA copy).",
+    "frama-c-eva": "Frama-C with the Eva abstract-interpretation plugin, C only (LGPL-2.1, separate process). Optional."
+  },
+  "ruleSets": [
+    {
+      "id": "misra-c-2012",
+      "name": "MISRA C:2012 (with amendments)",
+      "language": "c",
+      "enabledByDefault": true,
+      "coverage": "partial",
+      "backends": ["cppcheck-misra", "sca-native"],
+      "iso26262": ["language-subset", "strong-typing", "design-principles", "defensive-implementation"],
+      "implemented": false,
+      "reason": "Most decidable rules are checked by the Cppcheck MISRA addon. Some directives are about process/documentation (not tool-checkable), and 'undecidable' rules can only be approximated."
+    },
+    {
+      "id": "misra-c-2023",
+      "name": "MISRA C:2023",
+      "language": "c",
+      "enabledByDefault": false,
+      "coverage": "partial",
+      "backends": ["cppcheck-misra", "sca-native"],
+      "iso26262": ["language-subset", "strong-typing", "design-principles", "defensive-implementation"],
+      "implemented": false,
+      "reason": "Large overlap with MISRA C:2012 (it consolidates the amendments). New guidelines need our own checks."
+    },
+    {
+      "id": "misra-cpp-2023",
+      "name": "MISRA C++:2023",
+      "language": "cpp",
+      "enabledByDefault": false,
+      "coverage": "planned",
+      "backends": ["clang-tidy", "sca-native"],
+      "iso26262": ["language-subset", "strong-typing", "design-principles"],
+      "implemented": false,
+      "reason": "No free tool covers it; Cppcheck support exists only in the paid Premium edition. Some rules overlap clang-tidy checks; the rest must be written by us on top of the Clang AST."
+    },
+    {
+      "id": "autosar-cpp14",
+      "name": "AUTOSAR C++14",
+      "language": "cpp",
+      "enabledByDefault": false,
+      "coverage": "planned",
+      "backends": ["clang-tidy", "sca-native"],
+      "iso26262": ["language-subset", "strong-typing", "design-principles"],
+      "implemented": false,
+      "reason": "Partly overlaps clang-tidy (cppcoreguidelines-*, hicpp-*, bugprone-*). Largely superseded by MISRA C++:2023, so we map overlap first and add own checks by priority."
+    },
+    {
+      "id": "cert-c",
+      "name": "SEI CERT C",
+      "language": "c",
+      "enabledByDefault": false,
+      "coverage": "partial",
+      "backends": ["clang-tidy", "clang-analyzer", "cppcheck"],
+      "iso26262": ["defensive-implementation", "static-analysis"],
+      "implemented": false,
+      "reason": "clang-tidy has cert-* checks and the Clang Static Analyzer covers many run-time rules. Rules needing whole-program or concurrency analysis are missing."
+    },
+    {
+      "id": "cert-cpp",
+      "name": "SEI CERT C++",
+      "language": "cpp",
+      "enabledByDefault": false,
+      "coverage": "partial",
+      "backends": ["clang-tidy", "clang-analyzer"],
+      "iso26262": ["defensive-implementation", "static-analysis"],
+      "implemented": false,
+      "reason": "Same as CERT C: good subset via clang-tidy cert-* and the analyzer, gaps in concurrency and whole-program rules."
+    },
+    {
+      "id": "cwe",
+      "name": "CWE (mapping)",
+      "language": "c,cpp",
+      "enabledByDefault": false,
+      "coverage": "partial",
+      "backends": ["clang-analyzer", "cppcheck", "clang-tidy"],
+      "iso26262": ["static-analysis"],
+      "implemented": false,
+      "reason": "CWE is a weakness list, not a rule set. We tag findings with CWE IDs where a backend check maps to one."
+    },
+    {
+      "id": "iso-ts-17961",
+      "name": "ISO/IEC TS 17961 (C secure coding)",
+      "language": "c",
+      "enabledByDefault": false,
+      "coverage": "partial",
+      "backends": ["clang-analyzer", "cppcheck", "clang-tidy"],
+      "iso26262": ["defensive-implementation"],
+      "implemented": false,
+      "reason": "Strong overlap with CERT C; covered through the same checks."
+    },
+    {
+      "id": "his-metrics",
+      "name": "HIS code metrics (complexity limits)",
+      "language": "c,cpp",
+      "enabledByDefault": true,
+      "coverage": "full",
+      "backends": ["sca-native"],
+      "iso26262": ["low-complexity"],
+      "implemented": false,
+      "reason": "Metrics (cyclomatic complexity, nesting, function size, parameters, ...) are straightforward to compute from the AST. Fully achievable by us."
+    },
+    {
+      "id": "runtime-bugfinder",
+      "name": "Run-time errors - bug finding",
+      "language": "c,cpp",
+      "enabledByDefault": true,
+      "coverage": "partial",
+      "backends": ["clang-analyzer", "cppcheck", "sca-native"],
+      "iso26262": ["static-analysis", "data-flow-analysis", "control-flow-analysis"],
+      "implemented": false,
+      "reason": "Division by zero, null dereference, uninitialized reads, out-of-bounds, leaks: found on many paths, but not proven absent (unsound by design)."
+    },
+    {
+      "id": "runtime-proof",
+      "name": "Run-time errors - proof of absence (abstract interpretation)",
+      "language": "c,cpp",
+      "enabledByDefault": false,
+      "coverage": "not-covered",
+      "backends": ["frama-c-eva"],
+      "iso26262": ["abstract-interpretation"],
+      "implemented": false,
+      "reason": "Sound proof needs a full abstract-interpretation engine (years of work). Frama-C Eva can be added later as an optional backend, but it supports C only - there is no mature open-source equivalent for C++."
+    },
+    {
+      "id": "concurrency",
+      "name": "Concurrency (data races, deadlocks)",
+      "language": "c,cpp",
+      "enabledByDefault": false,
+      "coverage": "not-covered",
+      "backends": [],
+      "iso26262": ["concurrency"],
+      "implemented": false,
+      "reason": "Needs a whole-program model of tasks/interrupts and shared data (OS/RTOS-specific). Free tools are weak here. Later phase."
+    },
+    {
+      "id": "jsf-av-cpp",
+      "name": "JSF AV C++",
+      "language": "cpp",
+      "enabledByDefault": false,
+      "coverage": "not-covered",
+      "backends": [],
+      "iso26262": [],
+      "implemented": false,
+      "reason": "Aerospace legacy standard, not needed for automotive. Superseded by MISRA C++:2023."
+    },
+    {
+      "id": "sca-own",
+      "name": "SCA own rules",
+      "language": "c,cpp",
+      "enabledByDefault": true,
+      "coverage": "full",
+      "backends": ["sca-native"],
+      "iso26262": ["style-guide", "naming-conventions", "design-principles"],
+      "implemented": false,
+      "reason": "Our own rules (naming, style, project conventions). No licensing limits."
+    }
+  ]
+}
