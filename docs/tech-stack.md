@@ -13,6 +13,8 @@ What SCA is built with, and why. Versions are the ones installed on 2026-11-11.
 | Lint | ESLint + typescript-eslint | 10.14.0 / 8.72.2 | Code quality checks |
 | Unit tests | Mocha | 12.0.3 | Fast tests without VS Code |
 | Integration tests | @vscode/test-cli + @vscode/test-electron | 0.0.15 / 3.1.0 | Tests inside a real VS Code instance |
+| Packaging | @vscode/vsce | 4.1.0 | Builds `sca.vsix` (`npm run package`) |
+| Installer | PowerShell script `installer.ps1` | Windows PowerShell 5.1+ | One-step build + install into VS Code |
 | Version control | Git + GitHub | 2.55.0 | Code at github.com/Tomasi12/sca |
 
 ## Runtime and editor
@@ -86,7 +88,8 @@ tsconfig.json             TypeScript config
 ## Not used yet (planned / open)
 
 - **Bundler** (esbuild) — before publishing.
-- **Packaging** with `@vscode/vsce` → `.vsix` (needs a LICENSE first).
+- **LICENSE** — packaging currently uses `--skip-license`; choose a license before publishing.
+- **Marketplace publishing.**
 - **CI** (GitHub Actions) to run tests on every push.
 - **Language Server Protocol** (LSP) for the analyzer engine.
 - **SARIF** output for CI integration.

@@ -19,9 +19,33 @@ docs/                     user documentation
 .vscode-test.mjs          integration test config (@vscode/test-cli)
 ```
 
-## Installation — step by step
+## Quick install (Windows, one script)
 
-SCA is not on the VS Code Marketplace yet. You run it from source.
+Needs Git, Node.js 22+ and VS Code (see Step 1 below). Then:
+```powershell
+git clone https://github.com/Tomasi12/sca.git
+```
+```powershell
+cd sca
+```
+```powershell
+powershell -ExecutionPolicy Bypass -File .\installer.ps1
+```
+The script checks the prerequisites, installs dependencies, builds `sca.vsix` and installs it into VS Code.
+Afterwards reload VS Code, open a `.c` file and run **SCA: Show Info**.
+
+| Option | What it does |
+|---|---|
+| `-RunTests` | Run unit + integration tests before installing |
+| `-Uninstall` | Remove SCA from VS Code |
+| `-CodeCommand code-insiders` | Install into VS Code Insiders |
+
+`-ExecutionPolicy Bypass` only applies to this one run; it does not change your system settings.
+To update SCA later: `git pull`, then run `installer.ps1` again.
+
+## Installation for development — step by step
+
+SCA is not on the VS Code Marketplace yet. These steps run it from source in a development window.
 
 ### Step 1 — Install the prerequisites
 | Tool | Version | Download | Check it works |
@@ -103,6 +127,7 @@ npm run watch         # recompile on save
 npm run lint          # ESLint
 npm run test:unit     # unit tests (seconds, no VS Code)
 npm test              # compile + lint + integration tests in a downloaded VS Code
+npm run package       # build sca.vsix (installable extension file)
 ```
 See [docs/tech-stack.md](docs/tech-stack.md) for tools and versions.
 

@@ -38,7 +38,8 @@
     "lint": "eslint src",
     "pretest": "npm run compile && npm run lint",
     "test": "vscode-test",
-    "test:unit": "npm run compile && mocha \"out/test/unit/**/*.test.js\""
+    "test:unit": "npm run compile && mocha \"out/test/unit/**/*.test.js\"",
+    "package": "vsce package --no-dependencies --skip-license --out sca.vsix"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -46,6 +47,7 @@
     "@types/vscode": "~1.100.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.1.0",
     "eslint": "^10.14.0",
     "mocha": "^12.0.3",
     "typescript": "^6.0.3",
