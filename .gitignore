@@ -1,18 +1,20 @@
-# Build output
-build/
+# Node / extension build
+node_modules/
 out/
+dist/
+.vscode-test/
+*.vsix
+
+# Native build output (future analyzer engine)
+build/
 cmake-build-*/
 *.o
 *.obj
-*.a
-*.lib
-*.so
-*.dll
 *.exe
 *.pdb
 
-# Editors / OS
-.vscode/
+# Editors / OS (keep shared .vscode/launch.json and extensions.json)
+.vscode/settings.json
 .idea/
 .vs/
 Thumbs.db
