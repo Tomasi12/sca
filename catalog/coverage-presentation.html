@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SCA Rule Coverage</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --slide: #ffffff;
+    --text: #1b1f24;
+    --muted: #5b6470;
+    --line: #dde1e6;
+    --accent: #2457c5;
+    --accent-soft: #e8eefc;
+    --full: #1a7f4b;      --full-bg: #e3f4ea;
+    --partial: #9a6700;   --partial-bg: #fff3d6;
+    --planned: #5a4bb7;   --planned-bg: #ece9fb;
+    --none: #b42318;      --none-bg: #fdeceb;
+    --shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 24px rgba(0,0,0,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1216; --slide: #171b21; --text: #e6e9ee; --muted: #9aa4b1; --line: #2a313a;
+      --accent: #7aa2ff; --accent-soft: #1e2a44;
+      --full: #5fd39a; --full-bg: #12301f;
+      --partial: #f2c14e; --partial-bg: #33280f;
+      --planned: #b3a8ff; --planned-bg: #241f45;
+      --none: #ff8a80; --none-bg: #3a1714;
+      --shadow: 0 1px 3px rgba(0,0,0,.4);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1216; --slide: #171b21; --text: #e6e9ee; --muted: #9aa4b1; --line: #2a313a;
+    --accent: #7aa2ff; --accent-soft: #1e2a44;
+    --full: #5fd39a; --full-bg: #12301f;
+    --partial: #f2c14e; --partial-bg: #33280f;
+    --planned: #b3a8ff; --planned-bg: #241f45;
+    --none: #ff8a80; --none-bg: #3a1714;
+    --shadow: 0 1px 3px rgba(0,0,0,.4);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header.bar {
+    display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+    border-bottom: 1px solid var(--line); background: var(--slide);
+  }
+  header.bar .brand { font-weight: 700; }
+  header.bar .count { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  button {
+    font: inherit; color: var(--text); background: var(--slide);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:disabled { opacity: .4; cursor: default; }
+
+  main { flex: 1; overflow: hidden; position: relative; }
+  .slide {
+    position: absolute; inset: 0; overflow-y: auto; padding: 24px 16px 32px;
+    display: none;
+  }
+  .slide.active { display: block; }
+  .inner {
+    max-width: 1040px; margin: 0 auto; background: var(--slide); border-radius: 14px;
+    box-shadow: var(--shadow); padding: clamp(20px, 4vw, 44px);
+  }
+  h1 { font-size: clamp(1.7rem, 4.5vw, 2.6rem); line-height: 1.15; margin: 0 0 12px; }
+  h2 { font-size: clamp(1.3rem, 3.2vw, 1.8rem); margin: 0 0 6px; }
+  .kicker { color: var(--accent); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; font-size: .8rem; margin-bottom: 8px; }
+  .lead { color: var(--muted); font-size: 1.05rem; margin: 0 0 20px; }
+  p { margin: 0 0 12px; }
+  ul { margin: 0 0 12px; padding-left: 1.2em; }
+  li { margin: 4px 0; }
+
+  .note {
+    border-left: 4px solid var(--accent); background: var(--accent-soft);
+    padding: 10px 14px; border-radius: 6px; margin: 16px 0 0;
+  }
+
+  .table-wrap { overflow-x: auto; margin: 8px 0; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: .93rem; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); background: var(--bg); }
+  tr:last-child td { border-bottom: 0; }
+  td code, p code, li code { font-size: .85em; background: var(--bg); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line); }
+
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .8rem; font-weight: 600; white-space: nowrap; }
+  .full    { color: var(--full);    background: var(--full-bg); }
+  .partial { color: var(--partial); background: var(--partial-bg); }
+  .planned { color: var(--planned); background: var(--planned-bg); }
+  .none    { color: var(--none);    background: var(--none-bg); }
+
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .card { border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .card h3 { margin: 6px 0 6px; font-size: 1.05rem; }
+  .card p { color: var(--muted); font-size: .94rem; margin: 0; }
+  .card .why { color: var(--text); margin-top: 8px; font-size: .94rem; }
+
+  .stats { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin: 18px 0; }
+  .stat { border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .stat .n { font-size: 2rem; font-weight: 700; line-height: 1; }
+  .stat .l { color: var(--muted); font-size: .88rem; margin-top: 6px; }
+
+  .flow { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; margin: 16px 0; }
+  .flow .box { flex: 1 1 160px; border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  .flow .box b { display: block; margin-bottom: 4px; }
+  .flow .box span { color: var(--muted); font-size: .9rem; }
+  .flow .arrow { align-self: center; color: var(--muted); font-size: 1.4rem; }
+  @media (max-width: 640px) { .flow .arrow { transform: rotate(90deg); width: 100%; text-align: center; } }
+
+  .phases { counter-reset: ph; list-style: none; padding: 0; }
+  .phases li { counter-increment: ph; position: relative; padding: 10px 0 10px 46px; border-bottom: 1px solid var(--line); margin: 0; }
+  .phases li:last-child { border-bottom: 0; }
+  .phases li::before {
+    content: counter(ph); position: absolute; left: 0; top: 10px; width: 30px; height: 30px; border-radius: 50%;
+    background: var(--accent-soft); color: var(--accent); font-weight: 700; display: grid; place-items: center;
+  }
+  .muted { color: var(--muted); }
+
+  footer.nav {
+    display: flex; gap: 8px; justify-content: center; align-items: center; padding: 10px 16px;
+    border-top: 1px solid var(--line); background: var(--slide);
+  }
+  .dots { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+  .dot { width: 10px; height: 10px; padding: 0; border-radius: 50%; background: var(--line); border: 0; }
+  .dot.on { background: var(--accent); }
+  @media print {
+    header.bar, footer.nav { display: none; }
+    main { overflow: visible; }
+    .slide { position: static; display: block; page-break-after: always; }
+    .inner { box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+<header class="bar">
+  <span class="brand">SCA · Rule coverage</span>
+  <span class="count" id="count">1 / 9</span>
+  <button id="theme" type="button" aria-label="Toggle light or dark theme">◐</button>
+</header>
+
+<main id="deck">
+
+  <!-- 1 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="kicker">SCA · Static Code Analyzer for VS Code</div>
+      <h1>What rules can SCA cover — and what not, and why</h1>
+      <p class="lead">Rule catalog overview compared with what Polyspace-class tools offer and what ISO 26262 asks for.</p>
+      <div class="stats">
+        <div class="stat"><div class="n">14</div><div class="l">rule sets in the catalog</div></div>
+        <div class="stat"><div class="n" style="color:var(--full)">2</div><div class="l">fully coverable</div></div>
+        <div class="stat"><div class="n" style="color:var(--partial)">7</div><div class="l">partially coverable</div></div>
+        <div class="stat"><div class="n" style="color:var(--planned)">2</div><div class="l">need our own checks</div></div>
+        <div class="stat"><div class="n" style="color:var(--none)">3</div><div class="l">not covered for now</div></div>
+      </div>
+      <p class="note"><b>Status:</b> this is the <b>target</b> coverage. SCA is an empty extension today — no rule is implemented yet.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="kicker">How it works</div>
+      <h2>One catalog, several checking engines</h2>
+      <p class="lead">Like Polyspace, users switch whole rule sets or single rules on and off. Behind each rule, SCA calls the best tool for it.</p>
+      <div class="flow">
+        <div class="box"><b>Config</b><span><code>.sca.json</code> or VS Code settings: rule sets on/off, single rules, limits, deviations</span></div>
+        <div class="arrow">→</div>
+        <div class="box"><b>Catalog</b><span>Rule ID → backend, coverage level, ISO 26262 topic, own description</span></div>
+        <div class="arrow">→</div>
+        <div class="box"><b>Backends</b><span>SCA native · clang-tidy · Clang Static Analyzer · Cppcheck (+ MISRA addon) · Frama-C (optional)</span></div>
+        <div class="arrow">→</div>
+        <div class="box"><b>Results</b><span>Squiggles in the editor, SARIF for CI, compliance report</span></div>
+      </div>
+      <ul>
+        <li><b>Deviations:</b> an accepted finding with a written reason and approver — needed for safety audits.</li>
+        <li><b>Licenses:</b> GPL/LGPL tools run as separate processes; their code is never copied into SCA.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="kicker">Legend</div>
+      <h2>Coverage levels</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Level</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><span class="pill full">Full</span></td><td>All tool-checkable rules of the set can be covered.</td></tr>
+          <tr><td><span class="pill partial">Partial</span></td><td>A useful subset is covered with existing tools; the rest is missing or approximated.</td></tr>
+          <tr><td><span class="pill planned">Own checks</span></td><td>No free tool covers it. We must write the checks ourselves — later phases.</td></tr>
+          <tr><td><span class="pill none">Not covered</span></td><td>Out of scope for now. The reason is always written down.</td></tr>
+        </tbody>
+      </table></div>
+      <p class="note">Even "Full" never means 100% of a standard: some MISRA directives are about process or documentation, and some rules are mathematically <i>undecidable</i> — every tool, including Polyspace, can only approximate those.</p>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="kicker">Rule sets · C</div>
+      <h2>Coding standards for C</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Rule set</th><th>Coverage</th><th>Backend</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td><b>MISRA C:2012</b> (+ amendments)</td><td><span class="pill partial">Partial</span></td><td>Cppcheck MISRA addon, SCA</td><td>Most decidable rules are checked by the free addon. Process-type directives are not tool-checkable.</td></tr>
+          <tr><td><b>MISRA C:2023</b></td><td><span class="pill partial">Partial</span></td><td>Cppcheck MISRA addon, SCA</td><td>Large overlap with 2012; new guidelines need our own checks.</td></tr>
+          <tr><td><b>SEI CERT C</b></td><td><span class="pill partial">Partial</span></td><td>clang-tidy, Clang Analyzer, Cppcheck</td><td>Good subset via <code>cert-*</code> checks; whole-program and concurrency rules missing.</td></tr>
+          <tr><td><b>ISO/IEC TS 17961</b></td><td><span class="pill partial">Partial</span></td><td>same as CERT C</td><td>Strong overlap with CERT C.</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="kicker">Rule sets · C++, metrics, run-time</div>
+      <h2>C++ standards, metrics and run-time errors</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Rule set</th><th>Coverage</th><th>Backend</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td><b>MISRA C++:2023</b></td><td><span class="pill planned">Own checks</span></td><td>clang-tidy (overlap), SCA</td><td>No free tool covers it (only paid Cppcheck Premium). We build checks on the Clang AST.</td></tr>
+          <tr><td><b>AUTOSAR C++14</b></td><td><span class="pill planned">Own checks</span></td><td>clang-tidy (overlap), SCA</td><td>Partial overlap with <code>cppcoreguidelines-*</code>, <code>hicpp-*</code>; mostly superseded by MISRA C++:2023.</td></tr>
+          <tr><td><b>SEI CERT C++</b></td><td><span class="pill partial">Partial</span></td><td>clang-tidy, Clang Analyzer</td><td>Good subset via <code>cert-*</code>.</td></tr>
+          <tr><td><b>CWE</b> (mapping)</td><td><span class="pill partial">Partial</span></td><td>all backends</td><td>Not a rule set — we tag findings with CWE IDs where possible.</td></tr>
+          <tr><td><b>HIS metrics</b></td><td><span class="pill full">Full</span></td><td>SCA</td><td>Complexity, nesting, size, parameters: easy to compute from the AST.</td></tr>
+          <tr><td><b>Run-time errors — bug finding</b></td><td><span class="pill partial">Partial</span></td><td>Clang Analyzer, Cppcheck, SCA</td><td>Finds div-by-zero, null, overflow, out-of-bounds, uninitialized… on many paths, but cannot <i>prove</i> they are absent.</td></tr>
+          <tr><td><b>SCA own rules</b></td><td><span class="pill full">Full</span></td><td>SCA</td><td>Naming, style, project rules. No license limits.</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="kicker">ISO 26262</div>
+      <h2>ISO 26262 topics we support</h2>
+      <p class="lead">ISO 26262 does not prescribe a rule set; it lists topics. Topic names paraphrased from the 2018 edition — check exact tables and ASIL ratings in your copy.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Part</th><th>Topic</th><th>Coverage</th><th>Through</th></tr></thead>
+        <tbody>
+          <tr><td>6</td><td>Low complexity</td><td><span class="pill full">Full</span></td><td>HIS metrics</td></tr>
+          <tr><td>6</td><td>Language subset</td><td><span class="pill partial">Partial</span></td><td>MISRA C/C++, AUTOSAR</td></tr>
+          <tr><td>6</td><td>Strong typing</td><td><span class="pill partial">Partial</span></td><td>MISRA essential types</td></tr>
+          <tr><td>6</td><td>Defensive implementation</td><td><span class="pill partial">Partial</span></td><td>MISRA, CERT</td></tr>
+          <tr><td>6</td><td>Design principles</td><td><span class="pill partial">Partial</span></td><td>MISRA, SCA own</td></tr>
+          <tr><td>6</td><td>Style guide · naming conventions</td><td><span class="pill full">Full</span></td><td>SCA own rules</td></tr>
+          <tr><td>6</td><td>Static code analysis</td><td><span class="pill partial">Partial</span></td><td>Bug finding, CERT, CWE</td></tr>
+          <tr><td>6</td><td>Control-flow · data-flow analysis</td><td><span class="pill partial">Partial</span></td><td>Clang Analyzer, Cppcheck</td></tr>
+          <tr><td>6</td><td>Abstract interpretation</td><td><span class="pill none">Not covered</span></td><td>see next slide</td></tr>
+          <tr><td>6</td><td>Concurrency</td><td><span class="pill none">Not covered</span></td><td>see next slide</td></tr>
+          <tr><td>8</td><td>Tool confidence / qualification</td><td><span class="pill none">Not covered</span></td><td>see next slide</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="kicker">Gaps</div>
+      <h2>What we cannot cover — and why</h2>
+      <div class="grid">
+        <div class="card">
+          <span class="pill none">Not covered</span>
+          <h3>Proof of absence of run-time errors</h3>
+          <p>What Polyspace Code Prover does (green / red / orange code).</p>
+          <p class="why">Needs a full abstract-interpretation engine — years of expert work. Frama-C Eva can be plugged in later, but it is <b>C only</b>; no mature open-source option exists for C++.</p>
+        </div>
+        <div class="card">
+          <span class="pill none">Not covered</span>
+          <h3>Tool qualification (ISO 26262-8)</h3>
+          <p>Evidence that the analyzer itself can be trusted.</p>
+          <p class="why">Requires a validated test suite per rule, known-limitations list, controlled releases, and usually an independent assessment (e.g. a certification kit). A process and cost topic, not just code.</p>
+        </div>
+        <div class="card">
+          <span class="pill none">Not covered</span>
+          <h3>Concurrency analysis</h3>
+          <p>Data races, deadlocks, shared variables between tasks and interrupts.</p>
+          <p class="why">Needs a whole-program model of tasks/ISRs, which depends on the OS/RTOS. Free tools are weak here. Later phase.</p>
+        </div>
+        <div class="card">
+          <span class="pill none">Not covered</span>
+          <h3>JSF AV C++</h3>
+          <p>Aerospace coding standard.</p>
+          <p class="why">Not needed for automotive and superseded by MISRA C++:2023.</p>
+        </div>
+        <div class="card">
+          <span class="pill planned">Limited</span>
+          <h3>Official rule texts</h3>
+          <p>MISRA / AUTOSAR wording in messages.</p>
+          <p class="why">Copyrighted. We use rule IDs and our own descriptions; users who own the standards can load the official texts locally.</p>
+        </div>
+        <div class="card">
+          <span class="pill planned">Limited</span>
+          <h3>Undecidable &amp; process rules</h3>
+          <p>Some MISRA rules and directives.</p>
+          <p class="why">Undecidable rules can only be approximated by any tool; process/documentation directives need human review, not a checker.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="kicker">Roadmap</div>
+      <h2>Suggested order</h2>
+      <ol class="phases">
+        <li><b>Catalog + configuration</b> — load the catalog, rule sets on/off in settings, deviations. <span class="muted">No checks yet.</span></li>
+        <li><b>First real findings</b> — run Clang Static Analyzer / clang-tidy on the open file, show squiggles. Run-time bug finding + CERT subset.</li>
+        <li><b>MISRA C:2012</b> — Cppcheck MISRA addon as a backend, rule mapping, own checks for gaps.</li>
+        <li><b>HIS metrics</b> — native SCA checks with configurable limits.</li>
+        <li><b>Reports</b> — SARIF output and a compliance report (rules checked, findings, deviations).</li>
+        <li><b>C++ standards</b> — MISRA C++:2023 / AUTOSAR: map clang-tidy overlap, then own checks by priority.</li>
+        <li><b>Later / optional</b> — Frama-C Eva for C proofs, concurrency, tool-qualification evidence.</li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- 9 -->
+  <section class="slide">
+    <div class="inner">
+      <div class="kicker">Summary</div>
+      <h2>Bottom line</h2>
+      <ul>
+        <li>SCA can offer <b>Polyspace-style rule selection</b> with a catalog and configurable rule sets.</li>
+        <li>With free backends we reach <b>good coverage for MISRA C, CERT, metrics and bug finding</b>.</li>
+        <li><b>MISRA C++ / AUTOSAR</b> need our own checks — the biggest development effort.</li>
+        <li><b>Proofs (Code Prover-style), concurrency and tool qualification</b> are not covered now — each for a clear reason.</li>
+        <li>SCA can <b>support</b> ISO 26262 work; it does not make code compliant by itself.</li>
+      </ul>
+      <p class="note">Source data: <code>catalog/rulesets.json</code> and <code>catalog/iso26262-mapping.json</code>. ISO 26262, MISRA and AUTOSAR content is paraphrased; verify against the official documents.</p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="nav">
+  <button id="prev" type="button" aria-label="Previous slide">← Prev</button>
+  <div class="dots" id="dots"></div>
+  <button id="next" type="button" aria-label="Next slide">Next →</button>
+</footer>
+
+<script>
+  (function () {
+    var slides = Array.prototype.slice.call(document.querySelectorAll(".slide"));
+    var dots = document.getElementById("dots");
+    var count = document.getElementById("count");
+    var prev = document.getElementById("prev");
+    var next = document.getElementById("next");
+    var current = 0;
+
+    slides.forEach(function (_, i) {
+      var d = document.createElement("button");
+      d.className = "dot";
+      d.type = "button";
+      d.setAttribute("aria-label", "Go to slide " + (i + 1));
+      d.addEventListener("click", function () { show(i); });
+      dots.appendChild(d);
+    });
+
+    function show(i) {
+      current = Math.max(0, Math.min(slides.length - 1, i));
+      slides.forEach(function (s, k) { s.classList.toggle("active", k === current); });
+      Array.prototype.forEach.call(dots.children, function (d, k) { d.classList.toggle("on", k === current); });
+      count.textContent = (current + 1) + " / " + slides.length;
+      prev.disabled = current === 0;
+      next.disabled = current === slides.length - 1;
+      slides[current].scrollTop = 0;
+      try { history.replaceState(null, "", "#" + (current + 1)); } catch (e) {}
+    }
+
+    prev.addEventListener("click", function () { show(current - 1); });
+    next.addEventListener("click", function () { show(current + 1); });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") { e.preventDefault(); show(current + 1); }
+      if (e.key === "ArrowLeft" || e.key === "PageUp") { e.preventDefault(); show(current - 1); }
+      if (e.key === "Home") { show(0); }
+      if (e.key === "End") { show(slides.length - 1); }
+    });
+
+    var startX = null, startY = null;
+    document.getElementById("deck").addEventListener("touchstart", function (e) {
+      startX = e.touches[0].clientX; startY = e.touches[0].clientY;
+    }, { passive: true });
+    document.getElementById("deck").addEventListener("touchend", function (e) {
+      if (startX === null) { return; }
+      var dx = e.changedTouches[0].clientX - startX;
+      var dy = e.changedTouches[0].clientY - startY;
+      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) { show(current + (dx < 0 ? 1 : -1)); }
+      startX = null;
+    }, { passive: true });
+
+    document.getElementById("theme").addEventListener("click", function () {
+      var root = document.documentElement;
+      var dark = root.getAttribute("data-theme") === "dark" ||
+        (!root.getAttribute("data-theme") && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      root.setAttribute("data-theme", dark ? "light" : "dark");
+    });
+
+    function fromHash() {
+      var n = parseInt((location.hash || "#1").slice(1), 10);
+      return isNaN(n) ? 0 : n - 1;
+    }
+    window.addEventListener("hashchange", function () {
+      var n = fromHash();
+      if (n !== current) { show(n); }
+    });
+    show(fromHash());
+  })();
+</script>
+</body>
+</html>
