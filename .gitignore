@@ -1,0 +1,23 @@
+# Build output
+build/
+out/
+cmake-build-*/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.exe
+*.pdb
+
+# Editors / OS
+.vscode/
+.idea/
+.vs/
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Claude local settings
+.claude/settings.local.json
