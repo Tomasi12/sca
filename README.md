@@ -10,6 +10,7 @@ SCA is a **VS Code extension**.
 
 ## Contents
 - [Quick install with `installer.ps1`](#quick-install-with-installerps1) ← start here
+- [Walkthrough presentation (14 Nov 2026)](docs/14112026/index.html): purpose, how it works, step-by-step screenshots and recordings
 - [Installation for development — step by step](#installation-for-development--step-by-step)
 - [Benchmark](#benchmark)
 - [Commands (reference)](#commands-reference)
