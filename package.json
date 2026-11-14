@@ -94,6 +94,11 @@
         "title": "Export Report (HTML, CSV, SARIF)",
         "category": "SCA",
         "icon": "$(export)"
+      },
+      {
+        "command": "sca.showCfg",
+        "title": "Show Control-Flow Graph (function at cursor)",
+        "category": "SCA"
       }
     ],
     "menus": {
@@ -119,6 +124,11 @@
           "command": "sca.removeFromMonitor",
           "when": "sca.hasMonitoredEntries && (resourceLangId == c || resourceLangId == cpp)",
           "group": "7_sca@2"
+        },
+        {
+          "command": "sca.showCfg",
+          "when": "resourceLangId == c || resourceLangId == cpp",
+          "group": "7_sca@3"
         }
       ],
       "editor/title/context": [

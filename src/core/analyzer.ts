@@ -4,6 +4,7 @@
 // -> justifications (comments in the code, deviations in .sca.json). Results are cached by file content.
 
 import { createHash } from "crypto";
+import { describeFunctionAt } from "./engine/debug";
 import { justificationFor, findJustifications } from "./justify";
 import { compareFindings, Finding } from "./finding";
 import { ParsedSource, SourceParser } from "./parser/parser";
@@ -76,6 +77,20 @@ export class Analyzer {
       this.cache.delete(this.cache.keys().next().value as string);
     }
     return [...result];
+  }
+
+  /** "Show CFG": the engine's view of the function at a 1-based line (undefined: no parser or no function). */
+  describeFunction(file: string, text: string, line: number, context?: FileContext): string | undefined {
+    const pre = preprocess(file, text, context?.env ?? NO_PROJECT_ENV);
+    const parsed = this.parser?.parse(file, pre.text);
+    if (!parsed) {
+      return undefined;
+    }
+    try {
+      return describeFunctionAt({ file, text, parsed, macros: pre.macros }, line);
+    } finally {
+      parsed.dispose();
+    }
   }
 
   private run(file: string, text: string, context?: FileContext): Finding[] {

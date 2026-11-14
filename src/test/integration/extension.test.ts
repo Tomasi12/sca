@@ -317,4 +317,14 @@ describe("SCA extension (integration)", () => {
       assert.strictEqual(diag.severity, vscode.DiagnosticSeverity.Warning);
     });
   });
+
+  describe("value engine", () => {
+    it("Show Control-Flow Graph describes the function at a line", async () => {
+      const folder = vscode.workspace.workspaceFolders![0];
+      const file = path.join(folder.uri.fsPath, "div_by_zero.c");
+      const text = await vscode.commands.executeCommand<string>("sca.showCfg", { file, line: 6, open: false });
+      assert.match(text ?? "", /^CFG of divide\(\)/);
+      assert.match(text ?? "", /y = \[0, 2147483647\] \(0: parameter 'y' of divide\(\)\)/);
+    });
+  });
 });
