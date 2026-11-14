@@ -201,6 +201,33 @@ describe("SCA extension (integration)", () => {
       await assert.rejects(analyzedOnce(tempUri.fsPath, 1000));
     });
 
+    it("reports the division by zero in div_by_zero.c when it is monitored", async () => {
+      const sample = vscode.Uri.joinPath(vscode.workspace.workspaceFolders![0].uri, "div_by_zero.c");
+      await vscode.commands.executeCommand("sca.addToMonitor", sample);
+      const file = api.issueStore.files().find((f) => path.basename(f) === "div_by_zero.c");
+      assert.ok(file, "sample not in the issue store");
+      const findings = api.issueStore.findingsFor(file);
+      assert.deepStrictEqual(
+        findings.map((f) => [f.ruleId, f.certainty, f.range.start.line]),
+        [["runtime-bugfinder:div-zero", "possible", 6]]
+      );
+      const diags = vscode.languages.getDiagnostics(sample).filter((d) => d.source === "SCA");
+      assert.strictEqual(diags.length, 1);
+      assert.strictEqual(diags[0].range.start.line, 5);
+      await vscode.commands.executeCommand("sca.removeFromMonitor", sample);
+    });
+
+    it("reports switch-default and goto findings in coding_rules.c", async () => {
+      const sample = vscode.Uri.joinPath(vscode.workspace.workspaceFolders![0].uri, "coding_rules.c");
+      await vscode.commands.executeCommand("sca.addToMonitor", sample);
+      const file = api.issueStore.files().find((f) => path.basename(f) === "coding_rules.c")!;
+      assert.deepStrictEqual(
+        api.issueStore.findingsFor(file).map((f) => `${f.ruleId}@${f.range.start.line}`),
+        ["sca-own:switch-default@9", "sca-own:switch-default@37", "sca-own:goto@53"]
+      );
+      await vscode.commands.executeCommand("sca.removeFromMonitor", sample);
+    });
+
     it("loads the tree-sitter parser inside VS Code", () => {
       assert.ok(api.parser, "parser not loaded");
       const parsed = api.parser.parse("x.c", "int main(void) { return 0; }\n");

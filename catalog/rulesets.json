@@ -123,7 +123,8 @@
       "coverage": "partial",
       "backends": ["clang-analyzer", "cppcheck", "sca-native"],
       "iso26262": ["static-analysis", "data-flow-analysis", "control-flow-analysis"],
-      "implemented": false,
+      "implemented": true,
+      "implementedRules": ["div-zero"],
       "reason": "Division by zero, null dereference, uninitialized reads, out-of-bounds, leaks: found on many paths, but not proven absent (unsound by design)."
     },
     {
@@ -167,7 +168,8 @@
       "coverage": "full",
       "backends": ["sca-native"],
       "iso26262": ["style-guide", "naming-conventions", "design-principles"],
-      "implemented": false,
+      "implemented": true,
+      "implementedRules": ["switch-default", "goto"],
       "reason": "Our own rules (naming, style, project conventions). No licensing limits."
     }
   ]
