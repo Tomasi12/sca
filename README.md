@@ -6,7 +6,7 @@ and coding-rule violations.
 
 SCA is a **VS Code extension**.
 
-> Status: empty extension skeleton. Activates on C/C++ files and offers `SCA: Show Info`. No analysis yet.
+> Status: early development. Activates on C/C++ files, shows the **SCA → Issue Monitor** view; files and folders can be added to the monitor. No checks run yet, so no findings are reported.
 
 ## Contents
 - [Quick install with `installer.ps1`](#quick-install-with-installerps1) ← start here
@@ -59,6 +59,23 @@ It ends with **`SCA is installed.`** If any step fails, it stops and prints a re
 3. `Ctrl+Shift+P` → **SCA: Show Info** → message *"SCA is active. Languages: c, cpp."* ✅
 
 You can also check it in the Extensions view (`Ctrl+Shift+X`): search **SCA**.
+
+### 5. The Issue Monitor
+Click the **shield icon** in the Activity Bar to open **SCA → Issue Monitor**.
+
+| To… | Do this |
+|---|---|
+| Monitor a file or folder | Right-click it in the Explorer → **SCA: Add to Monitor** (works with a multi-selection too) |
+| Monitor the open file | Right-click in the editor or on its tab → **SCA: Add to Monitor**, or the **+** button in the Issue Monitor |
+| Stop monitoring | **SCA: Remove from Monitor** (same menus), or the **×** next to a file in the Issue Monitor |
+| Start over | The **Remove All** button in the Issue Monitor title bar |
+
+- Only C/C++ files are monitored (`.c .h .cpp .cc .cxx .hpp .hh .hxx`). A monitored folder includes all of them below it.
+- Folders matching `sca.monitor.exclude` are skipped (default: `node_modules`, `.git`, `third_party`, `build`, `out`).
+- A file monitored through its folder is removed by removing the folder.
+- The monitor is remembered per workspace.
+- Findings appear in the Issue Monitor (definite = error, possible = warning) and as squiggles in the Problems panel.
+  **No checks are active yet**, so monitored files are listed without findings.
 
 ### Options
 | Command | What it does |
@@ -134,12 +151,12 @@ TypeScript is compiled into the `out/` folder. No output means no errors.
 ```bash
 npm run test:unit
 ```
-Fast unit tests — you should see `3 passing`.
+Fast unit tests — you should see `31 passing`.
 ```bash
 npm test
 ```
 Lint + integration tests. The first run downloads a separate copy of VS Code
-into `.vscode-test/` (about 1 GB on disk after unpacking), then you should see `4 passing`.
+into `.vscode-test/` (about 1 GB on disk after unpacking), then you should see `14 passing`.
 
 ### Step 6 — Open the project in VS Code
 ```bash
@@ -188,7 +205,9 @@ See [docs/tech-stack.md](docs/tech-stack.md) for tools and versions.
 installer.ps1             one-step build + install into VS Code (Windows)
 catalog/                  rule catalog (rule sets, ISO 26262 mapping) + coverage presentation
 src/extension.ts          extension entry point (VS Code API)
-src/core/                 pure analyzer logic, no VS Code dependency
+src/core/                 pure analyzer logic, no VS Code dependency (Finding model, issue store)
+src/monitor/              Issue Monitor view + editor diagnostics (VS Code wiring)
+media/                    icons
 src/test/unit/            fast Mocha tests for src/core (no VS Code)
 src/test/integration/     tests inside a real VS Code instance
 tests/samples/            C/C++ inputs with expected findings (also the integration test workspace)
