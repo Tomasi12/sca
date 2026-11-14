@@ -1,5 +1,6 @@
 // VS Code wiring for "Add to Monitor" / "Remove from Monitor": keeps the monitored set (saved per workspace),
 // expands monitored folders to their C/C++ files, analyzes them and puts the results into the issue store.
+// Monitored files are analyzed again on every save (autosave included), after a short wait.
 
 import * as path from "path";
 import * as vscode from "vscode";
@@ -7,14 +8,29 @@ import { Analyzer } from "../core/analyzer";
 import { IssueStore } from "../core/issueStore";
 import { isSourceFile, SOURCE_GLOB } from "../core/languages";
 import { canonicalPath, MonitorEntry, MonitorSet } from "../core/monitorSet";
+import { AnalysisScheduler } from "../core/scheduler";
 import { MonitorNode } from "./issueMonitor";
 
 const STATE_KEY = "sca.monitor";
 /** Upper limit of files taken from one monitored folder, so a huge folder cannot freeze the editor. */
 const MAX_FILES_PER_FOLDER = 5000;
+/** Default wait after a save before the analysis starts (autosave can save several times a second). */
+export const DEFAULT_DEBOUNCE_MS = 300;
+
+function analysisConfig() {
+  const cfg = vscode.workspace.getConfiguration("sca");
+  return {
+    runOnSave: cfg.get<boolean>("analysis.runOnSave", true),
+    debounceMs: Math.max(0, cfg.get<number>("analysis.debounceMs", DEFAULT_DEBOUNCE_MS)),
+  };
+}
 
 export class MonitorController implements vscode.Disposable {
   readonly monitor: MonitorSet;
+  readonly scheduler: AnalysisScheduler;
+  /** Keys of the files the monitor covers right now (folders expanded, excludes applied). */
+  private tracked = new Set<string>();
+  private readonly analyzedListeners = new Set<(file: string) => void>();
   private readonly disposables: vscode.Disposable[] = [];
 
   constructor(
@@ -30,17 +46,53 @@ export class MonitorController implements vscode.Disposable {
     });
     this.disposables.push({ dispose: off });
     void vscode.commands.executeCommand("setContext", "sca.hasMonitoredEntries", this.monitor.list().length > 0);
+
+    this.scheduler = new AnalysisScheduler((file, signal) => this.analyzeOne(file, signal), {
+      delayMs: analysisConfig().debounceMs,
+      key: (f) => this.key(f),
+      onError: (file, err) => this.output.appendLine(`Analysis failed for ${file}: ${String(err)}`),
+    });
+    this.disposables.push(
+      { dispose: () => this.scheduler.dispose() },
+      // Fires for manual saves and for autosave alike.
+      vscode.workspace.onDidSaveTextDocument((doc) => this.onSaved(doc)),
+      vscode.workspace.onDidCreateFiles((e) => this.onFilesChanged(e.files)),
+      vscode.workspace.onDidDeleteFiles((e) => this.onFilesChanged(e.files)),
+      vscode.workspace.onDidRenameFiles((e) => this.onFilesChanged(e.files.flatMap((r) => [r.oldUri, r.newUri]))),
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration("sca.analysis.debounceMs")) {
+          this.scheduler.delayMs = analysisConfig().debounceMs;
+        }
+        if (e.affectsConfiguration("sca.monitor.exclude")) {
+          void this.refresh();
+        }
+      })
+    );
+  }
+
+  /** True when the file is covered by the monitor (and not excluded). */
+  isTracked(file: string): boolean {
+    return this.tracked.has(this.key(file));
+  }
+
+  /** Fires after a file was analyzed and its findings were stored. Returns an unsubscribe function. */
+  onDidAnalyze(listener: (file: string) => void): () => void {
+    this.analyzedListeners.add(listener);
+    return () => this.analyzedListeners.delete(listener);
+  }
+
+  /** "SCA: Analyze now": re-reads the monitored set and analyzes every file at once. Returns the number of files. */
+  async analyzeNow(): Promise<number> {
+    const files = await this.monitoredFiles();
+    this.applyTracked(files);
+    await this.scheduler.runNow(files);
+    return files.length;
   }
 
   /** Expands every monitored entry to its C/C++ files, drops stale results, analyzes what is new. */
   async refresh(): Promise<void> {
     const files = await this.monitoredFiles();
-    const keep = new Set(files.map((f) => this.key(f)));
-    for (const f of this.store.files()) {
-      if (!keep.has(this.key(f))) {
-        this.store.clearFile(f);
-      }
-    }
+    this.applyTracked(files);
     const known = new Set(this.store.files().map((f) => this.key(f)));
     await this.analyzeFiles(files.filter((f) => !known.has(this.key(f))));
   }
@@ -92,13 +144,51 @@ export class MonitorController implements vscode.Disposable {
     await this.refresh();
   }
 
-  /** Analyzes the given files and stores the results (used now on add; later on save). */
+  /** Analyzes the given files at once and stores the results. */
   async analyzeFiles(files: readonly string[]): Promise<void> {
-    for (const file of files) {
-      const text = await this.readText(file);
-      if (text !== undefined) {
-        this.store.setFindings(file, this.analyzer.analyze(file, text));
+    await this.scheduler.runNow(files);
+  }
+
+  private applyTracked(files: readonly string[]): void {
+    this.tracked = new Set(files.map((f) => this.key(f)));
+    for (const f of this.store.files()) {
+      if (!this.isTracked(f)) {
+        this.scheduler.cancel(f);
+        this.store.clearFile(f);
       }
+    }
+  }
+
+  private async analyzeOne(file: string, signal: AbortSignal): Promise<void> {
+    const text = await this.readText(file);
+    // Skip when a newer run took over, or the file left the monitor while we were reading it.
+    if (text === undefined || signal.aborted || !this.isTracked(file)) {
+      return;
+    }
+    const findings = this.analyzer.analyze(file, text);
+    if (signal.aborted || !this.isTracked(file)) {
+      return;
+    }
+    this.store.setFindings(file, findings);
+    for (const l of [...this.analyzedListeners]) {
+      l(file);
+    }
+  }
+
+  private onSaved(doc: vscode.TextDocument): void {
+    if (doc.uri.scheme !== "file" || !analysisConfig().runOnSave) {
+      return;
+    }
+    const file = canonicalPath(doc.uri.fsPath);
+    if (this.isTracked(file)) {
+      this.scheduler.schedule(file);
+    }
+  }
+
+  /** A C/C++ file was created, deleted or renamed: the expanded file list of a monitored folder may change. */
+  private onFilesChanged(uris: readonly vscode.Uri[]): void {
+    if (uris.some((u) => this.monitor.isMonitored(u.fsPath) && (isSourceFile(u.fsPath) || this.isTracked(u.fsPath)))) {
+      void this.refresh();
     }
   }
 
@@ -208,6 +298,13 @@ export function registerMonitorCommands(controller: MonitorController): vscode.D
       }
       return controller.remove(uris);
     }),
-    vscode.commands.registerCommand("sca.clearMonitor", () => controller.clear())
+    vscode.commands.registerCommand("sca.clearMonitor", () => controller.clear()),
+    vscode.commands.registerCommand("sca.analyzeNow", async () => {
+      const n = await controller.analyzeNow();
+      if (n === 0) {
+        void vscode.window.showInformationMessage("SCA: nothing to analyze. Add files or folders to the monitor first.");
+      }
+      return n;
+    })
   );
 }

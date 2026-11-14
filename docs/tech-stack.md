@@ -13,6 +13,7 @@ What SCA is built with, and why. Versions are the ones installed on 2026-11-11.
 | Lint | ESLint + typescript-eslint | 10.14.0 / 8.72.2 | Code quality checks |
 | Unit tests | Mocha | 12.0.3 | Fast tests without VS Code |
 | Integration tests | @vscode/test-cli + @vscode/test-electron | 0.0.15 / 3.1.0 | Tests inside a real VS Code instance |
+| Parser | web-tree-sitter + tree-sitter-c / tree-sitter-cpp | 0.27.2 / 0.24.1 / 0.23.4 | C/C++ syntax trees (WASM, no native build) |
 | Packaging | @vscode/vsce | 4.1.0 | Builds `sca.vsix` (`npm run package`) |
 | Installer | PowerShell script `installer.ps1` | Windows PowerShell 5.1+ | One-step build + install into VS Code |
 | Version control | Git + GitHub | 2.55.0 | Code at github.com/Tomasi12/sca |
@@ -23,7 +24,7 @@ What SCA is built with, and why. Versions are the ones installed on 2026-11-11.
 - **`@types/vscode` 1.100.0** is pinned with `~` so its API types are never newer than `engines`
   (otherwise we could call APIs that older supported VS Code versions do not have).
 - **Activation:** the extension starts when a C or C++ file is opened (`onLanguage:c`, `onLanguage:cpp`).
-- **Command:** `SCA: Show Info` (`sca.showInfo`) — placeholder.
+- **Commands:** `SCA: Show Info`, `SCA: Add to Monitor`, `SCA: Remove from Monitor`, `SCA: Remove All from Monitor`, `SCA: Analyze Now`.
 
 ## Language and build
 
@@ -32,6 +33,17 @@ What SCA is built with, and why. Versions are the ones installed on 2026-11-11.
 - **Note:** TypeScript 6 no longer loads `@types/*` packages automatically (`types` defaults to `[]`),
   so `tsconfig.json` lists `"types": ["node", "mocha"]` explicitly.
 - Type packages: `@types/node` 22, `@types/mocha` 10, `@types/vscode` 1.100.
+
+## Parser
+
+- **tree-sitter**, loaded as WebAssembly through `web-tree-sitter` (a runtime dependency, shipped in the `.vsix`).
+  No native compile step, so it works the same on every OS.
+- The grammars come from the `tree-sitter-c` and `tree-sitter-cpp` packages (dev dependencies, installed with
+  `--ignore-scripts`; only their prebuilt `.wasm` is used). `npm run compile` copies the runtime and grammar `.wasm`
+  files to `out/parsers/` (`scripts/copy-wasm.mjs`).
+- Code: `src/core/parser/parser.ts` (`SourceParser`, `walk`, `nodeRange`). Columns are in UTF-16 characters, as in VS Code.
+- **Limit:** the tree is built from the source *before* preprocessing — macros are not expanded and every `#if`
+  branch is parsed. Checks must handle this.
 
 ## Code quality
 
@@ -56,7 +68,7 @@ Two levels, following Microsoft's recommended setup for extensions:
 
 ```bash
 npm install          # install dependencies
-npm run compile      # TypeScript -> out/
+npm run compile      # TypeScript -> out/, parser .wasm -> out/parsers/
 npm run watch        # recompile on save
 npm run lint         # ESLint
 npm run test:unit    # unit tests
@@ -69,6 +81,9 @@ In VS Code, **F5** launches the extension in a development window (`.vscode/laun
 ```
 src/extension.ts          entry point, VS Code wiring only
 src/core/                 analyzer logic (pure TypeScript)
+src/core/parser/          C/C++ parser (tree-sitter)
+src/monitor/              Issue Monitor, status bar, save trigger (VS Code wiring)
+scripts/                  build helpers (copy-wasm.mjs)
 src/test/unit/            unit tests
 src/test/integration/     integration tests
 tests/samples/            C/C++ sample files with expected findings

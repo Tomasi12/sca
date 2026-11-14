@@ -6,7 +6,7 @@ and coding-rule violations.
 
 SCA is a **VS Code extension**.
 
-> Status: early development. Activates on C/C++ files, shows the **SCA → Issue Monitor** view; files and folders can be added to the monitor. No checks run yet, so no findings are reported.
+> Status: early development. Activates on C/C++ files, shows the **SCA → Issue Monitor** view; files and folders can be added to the monitor and are analyzed on every save. The C/C++ parser (tree-sitter) is in place; no checks run yet, so no findings are reported.
 
 ## Contents
 - [Quick install with `installer.ps1`](#quick-install-with-installerps1) ← start here
@@ -69,6 +69,7 @@ Click the **shield icon** in the Activity Bar to open **SCA → Issue Monitor**.
 | Monitor the open file | Right-click in the editor or on its tab → **SCA: Add to Monitor**, or the **+** button in the Issue Monitor |
 | Stop monitoring | **SCA: Remove from Monitor** (same menus), or the **×** next to a file in the Issue Monitor |
 | Start over | The **Remove All** button in the Issue Monitor title bar |
+| Analyze all monitored files now | **SCA: Analyze Now** (command palette), or the **▶** button in the Issue Monitor title bar |
 
 - Only C/C++ files are monitored (`.c .h .cpp .cc .cxx .hpp .hh .hxx`). A monitored folder includes all of them below it.
 - Folders matching `sca.monitor.exclude` are skipped (default: `node_modules`, `.git`, `third_party`, `build`, `out`).
@@ -76,6 +77,16 @@ Click the **shield icon** in the Activity Bar to open **SCA → Issue Monitor**.
 - The monitor is remembered per workspace.
 - Findings appear in the Issue Monitor (definite = error, possible = warning) and as squiggles in the Problems panel.
   **No checks are active yet**, so monitored files are listed without findings.
+
+#### When files are analyzed
+- When a file is added to the monitor.
+- **Every time a monitored file is saved** — by `Ctrl+S` or by autosave (`File → Auto Save`).
+  SCA waits a short time after the save (`sca.analysis.debounceMs`, default 300 ms); another save within that time restarts the wait,
+  so a burst of autosaves gives one analysis. A newer analysis of the same file cancels the older one.
+- On **SCA: Analyze Now**.
+- Turn off analysis on save with `sca.analysis.runOnSave: false`.
+
+The status bar shows **SCA: analyzing…** while it works and **SCA: N issues** when done; click it to open the Issue Monitor.
 
 ### Options
 | Command | What it does |
@@ -151,12 +162,12 @@ TypeScript is compiled into the `out/` folder. No output means no errors.
 ```bash
 npm run test:unit
 ```
-Fast unit tests — you should see `31 passing`.
+Fast unit tests — you should see `50 passing`.
 ```bash
 npm test
 ```
 Lint + integration tests. The first run downloads a separate copy of VS Code
-into `.vscode-test/` (about 1 GB on disk after unpacking), then you should see `14 passing`.
+into `.vscode-test/` (about 1 GB on disk after unpacking), then you should see `18 passing`.
 
 ### Step 6 — Open the project in VS Code
 ```bash
@@ -205,8 +216,10 @@ See [docs/tech-stack.md](docs/tech-stack.md) for tools and versions.
 installer.ps1             one-step build + install into VS Code (Windows)
 catalog/                  rule catalog (rule sets, ISO 26262 mapping) + coverage presentation
 src/extension.ts          extension entry point (VS Code API)
-src/core/                 pure analyzer logic, no VS Code dependency (Finding model, issue store)
-src/monitor/              Issue Monitor view + editor diagnostics (VS Code wiring)
+src/core/                 pure analyzer logic, no VS Code dependency (Finding model, issue store, scheduler)
+src/core/parser/          C/C++ parser (tree-sitter, WASM) and syntax-tree helpers for checks
+src/monitor/              Issue Monitor view, editor diagnostics, status bar, save trigger (VS Code wiring)
+scripts/copy-wasm.mjs     copies the parser .wasm files to out/parsers during `npm run compile`
 media/                    icons
 src/test/unit/            fast Mocha tests for src/core (no VS Code)
 src/test/integration/     tests inside a real VS Code instance
