@@ -74,6 +74,8 @@ npm run lint         # ESLint
 npm run test:unit    # unit tests
 npm test             # compile + lint + integration tests
 npm run benchmark -- <project>  # headless run vs. expected_findings.csv
+npm run analyze -- <project>    # headless findings (text, csv, sarif, html)
+npm run perf                    # speed test (5,000 generated files)
 ```
 In VS Code, **F5** launches the extension in a development window (`.vscode/launch.json`).
 
@@ -103,11 +105,15 @@ tsconfig.json             TypeScript config
 - `dbaeumer.vscode-eslint` — shows lint errors in the editor.
 - `ms-vscode.extension-test-runner` — run integration tests from the Testing view.
 
+## Continuous integration
+
+- **GitHub Actions**, `.github/workflows/ci.yml`: unit + integration tests on Linux and Windows (`npm ci --ignore-scripts`;
+  integration tests under `xvfb-run` on Linux), the car-control benchmark with `--fail-on-fp`, a speed test, and the SARIF
+  report and `.vsix` as build artifacts.
+
 ## Not used yet (planned / open)
 
 - **Bundler** (esbuild) — before publishing.
 - **LICENSE** — packaging currently uses `--skip-license`; choose a license before publishing.
 - **Marketplace publishing.**
-- **CI** (GitHub Actions) to run tests on every push.
 - **Language Server Protocol** (LSP) for the analyzer engine.
-- **SARIF** output for CI integration.

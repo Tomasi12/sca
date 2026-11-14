@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # The tree-sitter grammar packages ship prebuilt .wasm files; their native install scripts are not needed.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Compile and lint
+        run: |
+          npm run compile
+          npm run lint
+
+      - name: Unit tests
+        run: npx mocha "out/test/unit/**/*.test.js"
+
+      - name: Cache the test VS Code
+        uses: actions/cache@v4
+        with:
+          path: .vscode-test
+          key: vscode-test-${{ runner.os }}-${{ hashFiles('.vscode-test.mjs', 'package-lock.json') }}
+
+      - name: Integration tests (Linux, virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npx vscode-test
+
+      - name: Integration tests (Windows)
+        if: runner.os == 'Windows'
+        run: npx vscode-test
+
+  benchmark:
+    name: Benchmark on car-control
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the test project
+        uses: actions/checkout@v4
+        with:
+          repository: Tomasi12/car-control
+          path: car-control
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Benchmark (fails on a false positive)
+        run: npm run benchmark -- car-control --fail-on-fp
+
+      - name: Speed test (2,000 files)
+        run: npm run perf -- 2000 car-control --max-seconds 30
+
+      - name: SARIF report
+        run: npm run analyze -- car-control --format sarif --out sca-car-control.sarif
+
+      - name: Package the extension
+        run: npx vsce package --skip-license --out sca.vsix
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sca-${{ github.sha }}
+          path: |
+            sca.vsix
+            sca-car-control.sarif

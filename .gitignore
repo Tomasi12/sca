@@ -23,3 +23,8 @@ Desktop.ini
 
 # Claude local settings
 .claude/settings.local.json
+
+# Left behind only if an integration test is interrupted
+tests/samples/.sca.json
+tests/samples/.sca-baseline.json
+tests/samples/sca-report.*

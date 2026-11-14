@@ -107,6 +107,47 @@ Examples: [tests/samples/div_by_zero_cases.c](tests/samples/div_by_zero_cases.c)
 
 The status bar shows **SCA: analyzing…** while it works and **SCA: N issues** when done; click it to open the Issue Monitor.
 
+#### Icons
+The icon of a finding follows its **severity**, as in the Problems panel (red = error, yellow = warning).
+The text next to it says the **certainty** (*definite* / *possible*) or *justified*.
+
+### 6. Project setup: compile database and `.sca.json`
+SCA reads the project like the compiler does, so `#if` branches and macros are right:
+
+- **`compile_commands.json`** (written by CMake with `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, or by Bear) gives each file its
+  include paths and `-D` defines. SCA looks in `compile_commands.json`, `build/`, `out/` and `cmake-build-debug/`.
+- **`#if` / `#ifdef` / `#elif`** are evaluated; code in inactive branches is not checked. Without a compile database an
+  `#ifdef` on an unknown macro keeps both branches (include guards are still recognized).
+- **Macro constants** from the file and its headers are known to the checks: `x / CELLS` with `#define CELLS 0U` is reported.
+
+An optional **`.sca.json`** in the workspace root sets up the project (VS Code completes the keys):
+
+```json
+{
+  "ruleSets": { "sca-own": true },
+  "rules": { "sca-own:goto": false, "runtime-bugfinder:div-zero": { "severity": "error" } },
+  "exclude": ["**/generated/**"],
+  "compileCommands": "build/compile_commands.json",
+  "includePaths": ["include"],
+  "defines": { "UNIT_TEST": "1" },
+  "deviations": [{ "rule": "sca-own:goto", "file": "src/util.c", "line": 74, "reason": "Single cleanup exit." }]
+}
+```
+
+Everything is on by default; a single rule wins over its rule set. Changes to `.sca.json`, the compile database or a header
+re-check the monitored files. Problems in the setup are shown in **View → Output → SCA**.
+
+### 7. Review: justify, baseline, report
+- **Justify a finding** (reviewed and accepted): a comment on the same line, or on a comment line directly above it —
+  `/* sca-justify(runtime-bugfinder:div-zero): n is checked by every caller */`. The rule can also be `sca-own:*` or `*`.
+  The reason is required. Justified findings get a green check and do not count as issues. Without touching the code:
+  `deviations` in `.sca.json`.
+- **Baseline** for old code: **SCA: Save Baseline** writes `.sca-baseline.json`; from then on only **new** findings are shown
+  (the Issue Monitor shows how many are hidden). A finding is recognized by its file, rule and line text, so it stays hidden when
+  lines above it change. **SCA: Clear Baseline** shows everything again. Setting `sca.baseline.enabled`.
+- **SCA: Export Report** writes all findings as **HTML** (to read or share), **CSV** (spreadsheets) or **SARIF** (CI and
+  code-scanning tools). Also in the `…` menu of the Issue Monitor.
+
 ### Options
 | Command | What it does |
 |---|---|
@@ -181,12 +222,12 @@ TypeScript is compiled into the `out/` folder. No output means no errors.
 ```bash
 npm run test:unit
 ```
-Fast unit tests — you should see `69 passing`.
+Fast unit tests — you should see `102 passing`.
 ```bash
 npm test
 ```
 Lint + integration tests. The first run downloads a separate copy of VS Code
-into `.vscode-test/` (about 1 GB on disk after unpacking), then you should see `20 passing`.
+into `.vscode-test/` (about 1 GB on disk after unpacking), then you should see `24 passing`.
 
 ### Step 6 — Open the project in VS Code
 ```bash
@@ -251,8 +292,19 @@ npm run test:unit     # unit tests (seconds, no VS Code)
 npm test              # compile + lint + integration tests in a downloaded VS Code
 npm run package       # build sca.vsix (installable extension file)
 npm run benchmark -- <project>   # run all checks headless and compare with <project>/expected_findings.csv
+npm run analyze -- <project> [--format text|csv|sarif|html] [--out file] [--baseline] [--fail-on definite|possible|any]
+npm run perf -- [files=5000] [template-project] [--max-seconds s]   # speed test
 ```
 See [docs/tech-stack.md](docs/tech-stack.md) for tools and versions.
+
+## Continuous integration
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and pull request:
+unit and integration tests on Linux and Windows; on Linux also the car-control benchmark (fails on a false positive),
+a 2,000-file speed test, a SARIF report and the `.vsix` package (both kept as build artifacts).
+
+## Speed
+5,000 files (~436,000 lines, copies of car-control) take about **7 s** on a laptop the first time; unchanged files come from a
+cache (**~2 s** for all 5,000). Measure with `npm run perf`.
 
 ## Layout
 ```
@@ -262,7 +314,12 @@ src/extension.ts          extension entry point (VS Code API)
 src/core/                 pure analyzer logic, no VS Code dependency (Finding model, issue store, scheduler)
 src/core/parser/          C/C++ parser (tree-sitter, WASM) and syntax-tree helpers for checks
 src/core/checks/          native checks (div-zero, coding rules; list + category map in index.ts)
-src/bench/                headless benchmark (not shipped in the extension)
+src/core/preprocess/      #if evaluation and macro table (small preprocessor for analysis)
+src/core/project/         compile_commands.json, .sca.json, per-project context
+src/core/                 also: justify.ts, baseline.ts, report.ts (CSV / SARIF / HTML)
+src/cli/                  headless analysis (npm run analyze)
+schemas/                  JSON schema for .sca.json
+src/bench/                benchmark vs. answer key, speed test (not shipped in the extension)
 src/monitor/              Issue Monitor view, editor diagnostics, status bar, save trigger (VS Code wiring)
 scripts/copy-wasm.mjs     copies the parser .wasm files to out/parsers during `npm run compile`
 media/                    icons

@@ -239,4 +239,82 @@ describe("SCA extension (integration)", () => {
       }
     });
   });
+
+  describe("project setup, baseline and reports", () => {
+    let api: ScaApi;
+    let folder: vscode.Uri;
+    let sample: vscode.Uri;
+    const rel = (name: string) => vscode.Uri.joinPath(folder, name);
+    const sampleFile = () => api.issueStore.files().find((f) => path.basename(f) === "coding_rules.c")!;
+
+    /** Waits until the condition holds (the extension reacts to file changes asynchronously). */
+    async function until(cond: () => boolean, what: string, ms = 8000): Promise<void> {
+      const end = Date.now() + ms;
+      while (!cond()) {
+        if (Date.now() > end) {
+          throw new Error(`timed out waiting for: ${what}`);
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+
+    async function remove(uri: vscode.Uri): Promise<void> {
+      try {
+        await vscode.workspace.fs.delete(uri);
+      } catch {
+        // not there
+      }
+    }
+
+    before(async () => {
+      api = (await vscode.extensions.getExtension(EXTENSION_ID)!.activate()) as ScaApi;
+      folder = vscode.workspace.workspaceFolders![0].uri;
+      sample = rel("coding_rules.c");
+      await vscode.commands.executeCommand("sca.clearMonitor");
+      await vscode.commands.executeCommand("sca.addToMonitor", sample);
+      await until(() => api.issueStore.findingsFor(sampleFile()).length === 3, "3 findings in coding_rules.c");
+    });
+
+    after(async () => {
+      await remove(rel(".sca.json"));
+      await remove(rel(".sca-baseline.json"));
+      await remove(rel("sca-report.csv"));
+      await vscode.commands.executeCommand("sca.clearMonitor");
+    });
+
+    it("follows .sca.json: a rule set turned off disappears, and comes back", async () => {
+      await vscode.workspace.fs.writeFile(rel(".sca.json"), new TextEncoder().encode('{ "rules": { "sca-own:goto": false } }'));
+      await until(() => api.issueStore.findingsFor(sampleFile()).every((f) => f.ruleId !== "sca-own:goto"), "goto findings off");
+      assert.strictEqual(api.issueStore.findingsFor(sampleFile()).length, 2);
+      await remove(rel(".sca.json"));
+      await until(() => api.issueStore.findingsFor(sampleFile()).length === 3, "goto findings back");
+    });
+
+    it("hides findings after Save Baseline and shows them again after Clear Baseline", async () => {
+      assert.strictEqual(await vscode.commands.executeCommand<number>("sca.saveBaseline"), 3);
+      await until(() => api.issueStore.findingsFor(sampleFile()).length === 0, "findings hidden by baseline");
+      assert.strictEqual(api.issueStore.hiddenCount(), 3);
+      assert.strictEqual(await vscode.commands.executeCommand<number>("sca.clearBaseline", true), 1);
+      await until(() => api.issueStore.findingsFor(sampleFile()).length === 3, "findings back after clear");
+      assert.strictEqual(api.issueStore.hiddenCount(), 0);
+    });
+
+    it("exports a CSV report", async () => {
+      const target = rel("sca-report.csv").fsPath;
+      const written = await vscode.commands.executeCommand<string>("sca.exportReport", { format: "csv", file: target });
+      assert.strictEqual(written, target);
+      const csv = new TextDecoder().decode(await vscode.workspace.fs.readFile(rel("sca-report.csv")));
+      const lines = csv.trim().split(/\r?\n/);
+      assert.strictEqual(lines[0], "file,line,column,rule,certainty,severity,status,message,justification");
+      assert.ok(lines.some((l) => l.startsWith("coding_rules.c,53,") && l.includes("sca-own:goto")));
+    });
+
+    it("uses the same icon as the Problems panel (severity)", () => {
+      const [f] = api.issueStore.findingsFor(sampleFile());
+      assert.strictEqual(f.certainty, "definite");
+      assert.strictEqual(f.severity, "warning");
+      const diag = vscode.languages.getDiagnostics(sample).find((d) => d.source === "SCA")!;
+      assert.strictEqual(diag.severity, vscode.DiagnosticSeverity.Warning);
+    });
+  });
 });

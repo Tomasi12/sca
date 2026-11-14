@@ -7,13 +7,16 @@ export type IssueStoreListener = (changedFiles: readonly string[]) => void;
 
 export class IssueStore {
   private readonly byFile = new Map<string, readonly Finding[]>();
+  /** Findings hidden by the baseline, per file (only counted). */
+  private readonly hidden = new Map<string, number>();
   private readonly listeners = new Set<IssueStoreListener>();
 
   /**
    * Replaces all findings of one file (the result of one analysis run).
    * Findings for other files are ignored; duplicates (same key) are kept once; the list is sorted.
+   * `hiddenByBaseline` counts findings that exist but are not shown because they are in the baseline.
    */
-  setFindings(file: string, findings: readonly Finding[]): void {
+  setFindings(file: string, findings: readonly Finding[], hiddenByBaseline = 0): void {
     const seen = new Set<string>();
     const unique: Finding[] = [];
     for (const f of findings) {
@@ -25,12 +28,14 @@ export class IssueStore {
     }
     unique.sort(compareFindings);
     this.byFile.set(file, unique);
+    this.hidden.set(file, hiddenByBaseline);
     this.emit([file]);
   }
 
   /** Forgets a file entirely (e.g. removed from the monitor). */
   clearFile(file: string): void {
     if (this.byFile.delete(file)) {
+      this.hidden.delete(file);
       this.emit([file]);
     }
   }
@@ -39,6 +44,7 @@ export class IssueStore {
     const files = [...this.byFile.keys()];
     if (files.length > 0) {
       this.byFile.clear();
+      this.hidden.clear();
       this.emit(files);
     }
   }
@@ -54,6 +60,16 @@ export class IssueStore {
 
   allFindings(): Finding[] {
     return this.files().flatMap((f) => this.findingsFor(f));
+  }
+
+  /** Findings hidden by the baseline, for one file or all. */
+  hiddenCount(file?: string): number {
+    if (file !== undefined) {
+      return this.hidden.get(file) ?? 0;
+    }
+    let n = 0;
+    this.hidden.forEach((v) => (n += v));
+    return n;
   }
 
   summary(file?: string): FindingSummary {

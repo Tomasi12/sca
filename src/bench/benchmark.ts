@@ -8,13 +8,10 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { Analyzer } from "../core/analyzer";
-import { ALL_CHECKS, CATEGORY_RULES } from "../core/checks";
-import { isSourceFile } from "../core/languages";
-import { SourceParser } from "../core/parser/parser";
+import { analyzeProject } from "../cli/analyze";
+import { sourceFiles as projectSourceFiles } from "../cli/files";
+import { CATEGORY_RULES } from "../core/checks";
 import { BenchFinding, compare, formatReport, normalizePath, parseAnswerKey } from "./compare";
-
-const SKIP_DIRS = new Set(["build", "out", "third_party", "node_modules", ".git", "tools", ".vscode", ".vscode-test"]);
 
 interface Args {
   project: string;
@@ -55,22 +52,9 @@ function parseArgs(argv: string[]): Args {
 
 class UsageError extends Error {}
 
+/** C/C++ files of a project (build, third_party, ... skipped). */
 export function sourceFiles(root: string): string[] {
-  const files: string[] = [];
-  const visit = (dir: string) => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        if (!SKIP_DIRS.has(e.name)) {
-          visit(full);
-        }
-      } else if (isSourceFile(e.name)) {
-        files.push(full);
-      }
-    }
-  };
-  visit(root);
-  return files.sort();
+  return projectSourceFiles(root);
 }
 
 async function main(): Promise<number> {
@@ -92,24 +76,25 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  const parser = await SourceParser.create();
-  const analyzer = new Analyzer(ALL_CHECKS, parser);
-  const started = Date.now();
-  const files = sourceFiles(args.project);
-  const findings: BenchFinding[] = [];
-  for (const file of files) {
-    const rel = normalizePath(path.relative(args.project, file));
-    for (const f of analyzer.analyze(rel, fs.readFileSync(file, "utf8"))) {
-      findings.push({ file: rel, line: f.range.start.line, ruleId: f.ruleId, message: f.message });
-    }
+  // Same setup as the extension: .sca.json, compile database, headers. Justified findings count as reported.
+  const run = await analyzeProject(args.project);
+  for (const p of run.project.problems) {
+    console.error(`warning: ${p}`);
   }
-  parser.dispose();
-  const ms = Date.now() - started;
+  const files = run.files;
+  const ms = run.ms;
+  const findings: BenchFinding[] = run.findings.map((f) => ({
+    file: normalizePath(path.relative(args.project, f.file)),
+    line: f.range.start.line,
+    ruleId: f.ruleId,
+    message: f.message,
+  }));
 
   const expected = parseAnswerKey(fs.readFileSync(args.key, "utf8"));
   const result = compare(expected, findings, CATEGORY_RULES);
   process.stdout.write(formatReport(result, `SCA benchmark: ${path.basename(args.project)}`));
-  console.log(`\n${files.length} files, ${findings.length} findings, ${analyzer.checkCount} checks, ${ms} ms.`);
+  const db = run.project.dbPath ? `compile database ${normalizePath(path.relative(args.project, run.project.dbPath))}` : "no compile database";
+  console.log(`\n${files.length} files, ${findings.length} findings, ${ms} ms, ${db}.`);
 
   if (args.json) {
     fs.writeFileSync(args.json, JSON.stringify({ project: args.project, files: files.length, ms, ...result }, null, 2) + "\n");
