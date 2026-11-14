@@ -73,6 +73,7 @@ npm run watch        # recompile on save
 npm run lint         # ESLint
 npm run test:unit    # unit tests
 npm test             # compile + lint + integration tests
+npm run benchmark -- <project>  # headless run vs. expected_findings.csv
 ```
 In VS Code, **F5** launches the extension in a development window (`.vscode/launch.json`).
 
@@ -84,6 +85,8 @@ src/core/                 analyzer logic (pure TypeScript)
 src/core/parser/          C/C++ parser (tree-sitter)
 src/monitor/              Issue Monitor, status bar, save trigger (VS Code wiring)
 scripts/                  build helpers (copy-wasm.mjs)
+src/core/checks/          native checks
+src/bench/                headless benchmark (npm run benchmark)
 src/test/unit/            unit tests
 src/test/integration/     integration tests
 tests/samples/            C/C++ sample files with expected findings

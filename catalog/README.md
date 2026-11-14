@@ -1,9 +1,9 @@
 # SCA rule catalog
 
 The catalog lists **which rule sets SCA supports, how well, with which backend tool, and why something is not covered**.
-Users turn rule sets (or single rules) on and off, like in Polyspace.
+Users turn rule sets (or single rules) on and off.
 
-> **Status:** design only. The catalog shows the **target** coverage. No rule is implemented yet (`"implemented": false`).
+> **Status:** the catalog shows the **target** coverage. Rule sets with at least one working rule have `"implemented": true` and list them in `implementedRules`: today `runtime-bugfinder` (`div-zero`) and `sca-own` (`switch-default`, `goto`).
 
 📊 **Overview presentation:** open [coverage-presentation.html](coverage-presentation.html) in a browser.
 

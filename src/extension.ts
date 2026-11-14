@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { Analyzer } from "./core/analyzer";
+import { ALL_CHECKS } from "./core/checks";
 import { IssueStore } from "./core/issueStore";
 import { SUPPORTED_LANGUAGES } from "./core/languages";
 import { MonitorSet } from "./core/monitorSet";
@@ -27,8 +28,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<ScaApi
   if (parser) {
     context.subscriptions.push({ dispose: () => parser.dispose() });
   }
-  // No checks yet: they are added to this list as they are written.
-  const analyzer = new Analyzer([], parser);
+  // Checks need the syntax tree; without the parser they are off.
+  const analyzer = new Analyzer(parser ? ALL_CHECKS : [], parser);
   const controller = new MonitorController(context, issueStore, analyzer, output);
 
   context.subscriptions.push(

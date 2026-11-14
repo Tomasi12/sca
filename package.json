@@ -179,7 +179,8 @@
     "pretest": "npm run compile && npm run lint",
     "test": "vscode-test",
     "test:unit": "npm run compile && mocha \"out/test/unit/**/*.test.js\"",
-    "package": "vsce package --skip-license --out sca.vsix"
+    "package": "vsce package --skip-license --out sca.vsix",
+    "benchmark": "npm run compile && node out/bench/benchmark.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

@@ -6,11 +6,12 @@ and coding-rule violations.
 
 SCA is a **VS Code extension**.
 
-> Status: early development. Activates on C/C++ files, shows the **SCA → Issue Monitor** view; files and folders can be added to the monitor and are analyzed on every save. The C/C++ parser (tree-sitter) is in place; no checks run yet, so no findings are reported.
+> Status: early development. Activates on C/C++ files, shows the **SCA → Issue Monitor** view; files and folders can be added to the monitor and are analyzed on every save. Checks: possible division by zero, `switch` without `default`, `goto`. A headless benchmark compares the results with an answer key.
 
 ## Contents
 - [Quick install with `installer.ps1`](#quick-install-with-installerps1) ← start here
 - [Installation for development — step by step](#installation-for-development--step-by-step)
+- [Benchmark](#benchmark)
 - [Commands (reference)](#commands-reference)
 - [Layout](#layout)
 
@@ -76,7 +77,24 @@ Click the **shield icon** in the Activity Bar to open **SCA → Issue Monitor**.
 - A file monitored through its folder is removed by removing the folder.
 - The monitor is remembered per workspace.
 - Findings appear in the Issue Monitor (definite = error, possible = warning) and as squiggles in the Problems panel.
-  **No checks are active yet**, so monitored files are listed without findings.
+  See [Checks](#checks) for what is checked today.
+
+#### Checks
+| Rule ID | Reports | Certainty |
+|---|---|---|
+| `runtime-bugfinder:div-zero` | `/` or `%` (also `/=`, `%=`) by the constant 0 | definite (error) |
+| `runtime-bugfinder:div-zero` | `/` or `%` by a function parameter that is not checked against 0 first | possible (warning) |
+| `sca-own:switch-default` | `switch` without a `default` clause (a nested switch needs its own) | definite (warning) |
+| `sca-own:goto` | every `goto` statement | definite (warning) |
+
+A parameter counts as checked when the division is only reached after a test that rules out 0:
+`if (n != 0)`, `if (n > 0)`, `if (n)`, `n ? a / n : 0`, `n != 0 && ...`, the `else` of `if (n == 0)`,
+an earlier `if (n == 0) return ...;` (or `goto` / `break` / `continue` / `abort()`), or an earlier `assert(n != 0)`.
+A `static` function whose callers in the file all pass a non-zero constant is not reported.
+
+Not checked yet: globals, struct fields, locals and return values as divisors (needs value tracking).
+Functions that tree-sitter cannot fully parse (often because of macros) are skipped.
+Examples: [tests/samples/div_by_zero_cases.c](tests/samples/div_by_zero_cases.c), [tests/samples/coding_rules.c](tests/samples/coding_rules.c).
 
 #### When files are analyzed
 - When a file is added to the monitor.
@@ -162,12 +180,12 @@ TypeScript is compiled into the `out/` folder. No output means no errors.
 ```bash
 npm run test:unit
 ```
-Fast unit tests — you should see `50 passing`.
+Fast unit tests — you should see `69 passing`.
 ```bash
 npm test
 ```
 Lint + integration tests. The first run downloads a separate copy of VS Code
-into `.vscode-test/` (about 1 GB on disk after unpacking), then you should see `18 passing`.
+into `.vscode-test/` (about 1 GB on disk after unpacking), then you should see `20 passing`.
 
 ### Step 6 — Open the project in VS Code
 ```bash
@@ -199,6 +217,29 @@ If VS Code suggests the recommended extensions (ESLint, Extension Test Runner), 
 | `SCA: Show Info` is not in the list | Make sure you are in the **[Extension Development Host]** window, not the main one. |
 | `npm test` hangs on the first run | It is downloading VS Code — wait, or check your internet / proxy. |
 
+## Benchmark
+Runs every check on a C/C++ project **without VS Code** and compares the findings with the project's answer key
+(`expected_findings.csv`, one row per planted issue: `file, line, kind, category, description`).
+The test project [car-control](https://github.com/Tomasi12/car-control) has such a key.
+
+```bash
+npm run benchmark -- ../dummy_project
+npm run benchmark -- ../dummy_project --json bench.json --fail-on-fp
+```
+
+| Column | Meaning |
+|---|---|
+| expected | `DEFECT` / `RULE` rows of the category: should be reported |
+| found / missed | expected rows with / without a matching finding (same file, same line, rule of that category) |
+| false pos. | findings on a `SAFE` row of the category (correct code that was reported) |
+| unmarked | findings on lines without a marker: review them by hand, then add a marker to the project |
+
+Categories in the key that no check covers yet are listed at the end. Which rule IDs answer which category is set in
+`CATEGORY_RULES` (`src/core/checks/index.ts`). `--fail-on-fp` returns exit code 1 when there is a false positive (for CI).
+
+Result on car-control today: **7 of 10** expected issues found in the covered categories (`div_zero` 3/6, `switch_default` 1/1,
+`goto` 3/3), **0 false positives**, 0 unmarked findings.
+
 ## Commands (reference)
 ```bash
 npm install           # install dependencies
@@ -208,6 +249,7 @@ npm run lint          # ESLint
 npm run test:unit     # unit tests (seconds, no VS Code)
 npm test              # compile + lint + integration tests in a downloaded VS Code
 npm run package       # build sca.vsix (installable extension file)
+npm run benchmark -- <project>   # run all checks headless and compare with <project>/expected_findings.csv
 ```
 See [docs/tech-stack.md](docs/tech-stack.md) for tools and versions.
 
@@ -218,6 +260,8 @@ catalog/                  rule catalog (rule sets, ISO 26262 mapping) + coverage
 src/extension.ts          extension entry point (VS Code API)
 src/core/                 pure analyzer logic, no VS Code dependency (Finding model, issue store, scheduler)
 src/core/parser/          C/C++ parser (tree-sitter, WASM) and syntax-tree helpers for checks
+src/core/checks/          native checks (div-zero, coding rules; list + category map in index.ts)
+src/bench/                headless benchmark (not shipped in the extension)
 src/monitor/              Issue Monitor view, editor diagnostics, status bar, save trigger (VS Code wiring)
 scripts/copy-wasm.mjs     copies the parser .wasm files to out/parsers during `npm run compile`
 media/                    icons

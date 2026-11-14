@@ -153,7 +153,7 @@
     <div class="inner">
       <div class="kicker">SCA · Static Code Analyzer for VS Code</div>
       <h1>What rules can SCA cover — and what not, and why</h1>
-      <p class="lead">Rule catalog overview compared with what Polyspace-class tools offer and what ISO 26262 asks for.</p>
+      <p class="lead">Rule catalog overview: what commercial-grade analyzers usually offer, and what ISO 26262 asks for.</p>
       <div class="stats">
         <div class="stat"><div class="n">14</div><div class="l">rule sets in the catalog</div></div>
         <div class="stat"><div class="n" style="color:var(--full)">2</div><div class="l">fully coverable</div></div>
@@ -161,7 +161,7 @@
         <div class="stat"><div class="n" style="color:var(--planned)">2</div><div class="l">need our own checks</div></div>
         <div class="stat"><div class="n" style="color:var(--none)">3</div><div class="l">not covered for now</div></div>
       </div>
-      <p class="note"><b>Status:</b> this is the <b>target</b> coverage. SCA is an empty extension today — no rule is implemented yet.</p>
+      <p class="note"><b>Status:</b> this is the <b>target</b> coverage. Implemented today: <code>runtime-bugfinder:div-zero</code>, <code>sca-own:switch-default</code>, <code>sca-own:goto</code>.</p>
     </div>
   </section>
 
@@ -170,7 +170,7 @@
     <div class="inner">
       <div class="kicker">How it works</div>
       <h2>One catalog, several checking engines</h2>
-      <p class="lead">Like Polyspace, users switch whole rule sets or single rules on and off. Behind each rule, SCA calls the best tool for it.</p>
+      <p class="lead">Users switch whole rule sets or single rules on and off. Behind each rule, SCA calls the best tool for it.</p>
       <div class="flow">
         <div class="box"><b>Config</b><span><code>.sca.json</code> or VS Code settings: rule sets on/off, single rules, limits, deviations</span></div>
         <div class="arrow">→</div>
@@ -201,7 +201,7 @@
           <tr><td><span class="pill none">Not covered</span></td><td>Out of scope for now. The reason is always written down.</td></tr>
         </tbody>
       </table></div>
-      <p class="note">Even "Full" never means 100% of a standard: some MISRA directives are about process or documentation, and some rules are mathematically <i>undecidable</i> — every tool, including Polyspace, can only approximate those.</p>
+      <p class="note">Even "Full" never means 100% of a standard: some MISRA directives are about process or documentation, and some rules are mathematically <i>undecidable</i> — every tool can only approximate those.</p>
     </div>
   </section>
 
@@ -276,7 +276,7 @@
         <div class="card">
           <span class="pill none">Not covered</span>
           <h3>Proof of absence of run-time errors</h3>
-          <p>What Polyspace Code Prover does (green / red / orange code).</p>
+          <p>Proving that an operation can never fail (every operation shown as proven safe, proven failing, or unproven).</p>
           <p class="why">Needs a full abstract-interpretation engine — years of expert work. Frama-C Eva can be plugged in later, but it is <b>C only</b>; no mature open-source option exists for C++.</p>
         </div>
         <div class="card">
@@ -336,10 +336,10 @@
       <div class="kicker">Summary</div>
       <h2>Bottom line</h2>
       <ul>
-        <li>SCA can offer <b>Polyspace-style rule selection</b> with a catalog and configurable rule sets.</li>
+        <li>SCA offers <b>rule selection</b> with a catalog and configurable rule sets.</li>
         <li>With free backends we reach <b>good coverage for MISRA C, CERT, metrics and bug finding</b>.</li>
         <li><b>MISRA C++ / AUTOSAR</b> need our own checks — the biggest development effort.</li>
-        <li><b>Proofs (Code Prover-style), concurrency and tool qualification</b> are not covered now — each for a clear reason.</li>
+        <li><b>Proofs of absence of run-time errors, concurrency and tool qualification</b> are not covered now — each for a clear reason.</li>
         <li>SCA can <b>support</b> ISO 26262 work; it does not make code compliant by itself.</li>
       </ul>
       <p class="note">Source data: <code>catalog/rulesets.json</code> and <code>catalog/iso26262-mapping.json</code>. ISO 26262, MISRA and AUTOSAR content is paraphrased; verify against the official documents.</p>
