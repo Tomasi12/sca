@@ -140,4 +140,76 @@ describe("SCA extension (integration)", () => {
       assert.ok(api.monitor.isMonitored(fileUri.fsPath));
     });
   });
+
+  describe("analysis triggers", () => {
+    let api: ScaApi;
+    let tempUri: vscode.Uri;
+
+    const analyzedOnce = (file: string, timeoutMs = 5000) =>
+      new Promise<string>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          off();
+          reject(new Error(`no analysis of ${path.basename(file)} within ${timeoutMs} ms`));
+        }, timeoutMs);
+        const off = api.onDidAnalyze((f) => {
+          if (path.basename(f).toLowerCase() === path.basename(file).toLowerCase()) {
+            clearTimeout(timer);
+            off();
+            resolve(f);
+          }
+        });
+      });
+
+    before(async () => {
+      api = (await vscode.extensions.getExtension(EXTENSION_ID)!.activate()) as ScaApi;
+      // A scratch file, so the samples are never changed by the test.
+      tempUri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders![0].uri, "save_trigger_tmp.c");
+      await vscode.workspace.fs.writeFile(tempUri, new TextEncoder().encode("int f(void) { return 0; }\n"));
+    });
+
+    after(async () => {
+      await vscode.commands.executeCommand("sca.clearMonitor");
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await vscode.workspace.fs.delete(tempUri);
+    });
+
+    it("registers sca.analyzeNow and analyzes every monitored file", async () => {
+      await vscode.commands.executeCommand("sca.clearMonitor");
+      assert.strictEqual(await vscode.commands.executeCommand<number>("sca.analyzeNow"), 0);
+      await vscode.commands.executeCommand("sca.addToMonitor", tempUri);
+      const seen = analyzedOnce(tempUri.fsPath);
+      assert.strictEqual(await vscode.commands.executeCommand<number>("sca.analyzeNow"), 1);
+      await seen;
+    });
+
+    it("analyzes a monitored file again when it is saved", async () => {
+      await vscode.commands.executeCommand("sca.addToMonitor", tempUri);
+      const doc = await vscode.workspace.openTextDocument(tempUri);
+      const editor = await vscode.window.showTextDocument(doc);
+      await editor.edit((e) => e.insert(new vscode.Position(0, 0), "/* edit */\n"));
+      const seen = analyzedOnce(tempUri.fsPath);
+      assert.ok(await doc.save(), "document did not save");
+      await seen;
+    });
+
+    it("does not analyze a file that is not monitored", async () => {
+      await vscode.commands.executeCommand("sca.clearMonitor");
+      const doc = await vscode.workspace.openTextDocument(tempUri);
+      const editor = await vscode.window.showTextDocument(doc);
+      await editor.edit((e) => e.insert(new vscode.Position(0, 0), "/* edit 2 */\n"));
+      await doc.save();
+      await assert.rejects(analyzedOnce(tempUri.fsPath, 1000));
+    });
+
+    it("loads the tree-sitter parser inside VS Code", () => {
+      assert.ok(api.parser, "parser not loaded");
+      const parsed = api.parser.parse("x.c", "int main(void) { return 0; }\n");
+      try {
+        assert.strictEqual(parsed.root.type, "translation_unit");
+        assert.strictEqual(parsed.hasSyntaxErrors, false);
+      } finally {
+        parsed.dispose();
+      }
+    });
+  });
 });

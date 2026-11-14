@@ -13,3 +13,8 @@ CLAUDE.md
 .gitignore
 installer.ps1
 *.vsix
+scripts/**
+node_modules/web-tree-sitter/debug/**
+node_modules/web-tree-sitter/*.d.*
+node_modules/web-tree-sitter/web-tree-sitter.js
+node_modules/web-tree-sitter/web-tree-sitter.wasm

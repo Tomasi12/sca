@@ -70,6 +70,12 @@
         "title": "Remove All from Monitor",
         "category": "SCA",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "sca.analyzeNow",
+        "title": "Analyze Now",
+        "category": "SCA",
+        "icon": "$(play)"
       }
     ],
     "menus": {
@@ -116,9 +122,14 @@
           "group": "navigation@1"
         },
         {
-          "command": "sca.clearMonitor",
+          "command": "sca.analyzeNow",
           "when": "view == sca.issueMonitor && sca.hasMonitoredEntries",
           "group": "navigation@2"
+        },
+        {
+          "command": "sca.clearMonitor",
+          "when": "view == sca.issueMonitor && sca.hasMonitoredEntries",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -134,22 +145,41 @@
       "properties": {
         "sca.monitor.exclude": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["**/node_modules/**", "**/.git/**", "**/third_party/**", "**/build/**", "**/out/**"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/.git/**",
+            "**/third_party/**",
+            "**/build/**",
+            "**/out/**"
+          ],
           "description": "Glob patterns skipped when a monitored folder is expanded to its C/C++ files."
+        },
+        "sca.analysis.runOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Analyze a monitored file every time it is saved (autosave included)."
+        },
+        "sca.analysis.debounceMs": {
+          "type": "number",
+          "default": 300,
+          "minimum": 0,
+          "description": "Wait time in milliseconds after a save before the analysis starts. A new save within this time restarts the wait."
         }
       }
     }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ && node scripts/copy-wasm.mjs",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src",
     "pretest": "npm run compile && npm run lint",
     "test": "vscode-test",
     "test:unit": "npm run compile && mocha \"out/test/unit/**/*.test.js\"",
-    "package": "vsce package --no-dependencies --skip-license --out sca.vsix"
+    "package": "vsce package --skip-license --out sca.vsix"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -160,7 +190,12 @@
     "@vscode/vsce": "^4.1.0",
     "eslint": "^10.14.0",
     "mocha": "^12.0.3",
+    "tree-sitter-c": "^0.24.1",
+    "tree-sitter-cpp": "^0.23.4",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.72.2"
+  },
+  "dependencies": {
+    "web-tree-sitter": "^0.27.2"
   }
 }

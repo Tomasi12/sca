@@ -7,3 +7,8 @@
 - Issue Monitor: own "SCA" view in the Activity Bar (monitored file → findings, definite / possible / justified icons, click to open the line) and matching editor diagnostics (squiggles + Problems panel), both fed from one issue store (`src/core/issueStore.ts`). Empty until checks exist.
 - Shield icon for the SCA view container.
 - Monitor: "SCA: Add to Monitor" / "Remove from Monitor" / "Remove All from Monitor" for C/C++ files and folders (Explorer, editor and tab menus, Issue Monitor buttons, command palette). Folders expand to their C/C++ files (setting `sca.monitor.exclude`). The monitor is saved per workspace. `Analyzer` runs the list of checks (empty for now).
+- Run on save: monitored files are analyzed on every save, autosave included. Waits `sca.analysis.debounceMs` (default 300 ms) and restarts the wait on each new save; a newer run of a file cancels the older one (`src/core/scheduler.ts`). Setting `sca.analysis.runOnSave`. New C/C++ files in a monitored folder are picked up when created, renamed or deleted in VS Code.
+- `SCA: Analyze Now` command (also a ▶ button in the Issue Monitor).
+- Status bar item: "SCA: analyzing…" / "SCA: N issues"; click opens the Issue Monitor.
+- Parser layer `src/core/parser/`: C and C++ syntax trees with tree-sitter (web-tree-sitter + tree-sitter-c / tree-sitter-cpp, WASM, no native build). Grammar picked by extension (`.h` = C). Helpers: `walk`, `nodeRange` (1-based ranges). Checks get the tree through `SourceContext.parsed`. The tree is built before preprocessing, so macros are not expanded.
+- Packaging now includes the `web-tree-sitter` runtime; the grammar `.wasm` files ship in `out/parsers`.
