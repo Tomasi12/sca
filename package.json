@@ -23,13 +23,123 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sca",
+          "title": "SCA",
+          "icon": "media/sca-monitor.svg"
+        }
+      ]
+    },
+    "views": {
+      "sca": [
+        {
+          "id": "sca.issueMonitor",
+          "name": "Issue Monitor",
+          "contextualTitle": "SCA"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "sca.issueMonitor",
+        "contents": "No files are monitored yet.\nAdd C/C++ files or folders to the monitor: right-click them in the Explorer and choose \"SCA: Add to Monitor\", or add the file that is open now.\n[Add Current File](command:sca.addToMonitor)"
+      }
+    ],
     "commands": [
       {
         "command": "sca.showInfo",
         "title": "Show Info",
         "category": "SCA"
+      },
+      {
+        "command": "sca.addToMonitor",
+        "title": "Add to Monitor",
+        "category": "SCA",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sca.removeFromMonitor",
+        "title": "Remove from Monitor",
+        "category": "SCA",
+        "icon": "$(close)"
+      },
+      {
+        "command": "sca.clearMonitor",
+        "title": "Remove All from Monitor",
+        "category": "SCA",
+        "icon": "$(clear-all)"
       }
-    ]
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "sca.addToMonitor",
+          "when": "explorerResourceIsFolder || resourceLangId == c || resourceLangId == cpp",
+          "group": "7_sca@1"
+        },
+        {
+          "command": "sca.removeFromMonitor",
+          "when": "sca.hasMonitoredEntries && (explorerResourceIsFolder || resourceLangId == c || resourceLangId == cpp)",
+          "group": "7_sca@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "sca.addToMonitor",
+          "when": "resourceLangId == c || resourceLangId == cpp",
+          "group": "7_sca@1"
+        },
+        {
+          "command": "sca.removeFromMonitor",
+          "when": "sca.hasMonitoredEntries && (resourceLangId == c || resourceLangId == cpp)",
+          "group": "7_sca@2"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "sca.addToMonitor",
+          "when": "resourceLangId == c || resourceLangId == cpp",
+          "group": "7_sca@1"
+        },
+        {
+          "command": "sca.removeFromMonitor",
+          "when": "sca.hasMonitoredEntries && (resourceLangId == c || resourceLangId == cpp)",
+          "group": "7_sca@2"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "sca.addToMonitor",
+          "when": "view == sca.issueMonitor",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sca.clearMonitor",
+          "when": "view == sca.issueMonitor && sca.hasMonitoredEntries",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "sca.removeFromMonitor",
+          "when": "view == sca.issueMonitor && viewItem == sca.monitoredFile",
+          "group": "inline"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "SCA",
+      "properties": {
+        "sca.monitor.exclude": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["**/node_modules/**", "**/.git/**", "**/third_party/**", "**/build/**", "**/out/**"],
+          "description": "Glob patterns skipped when a monitored folder is expanded to its C/C++ files."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
