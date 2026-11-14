@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SCA Walkthrough</title>
+<meta name="description" content="SCA, a VS Code extension that checks C/C++ code as you write it: purpose, how it works, and how to use it step by step (status 14 Nov 2026).">
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --surface-2: #eef1f5;
+    --text: #1b1f24;
+    --muted: #5b6573;
+    --line: #d9dee5;
+    --accent: #2f6fde;
+    --accent-soft: #e5eefc;
+    --warn: #b7791f;
+    --warn-soft: #fdf3e1;
+    --err: #c53030;
+    --err-soft: #fde8e8;
+    --ok: #2f855a;
+    --ok-soft: #e3f4ea;
+    --code-bg: #1e1f22;
+    --code-text: #d4d4d4;
+    --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 8px 24px rgba(16, 24, 40, .08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121417;
+      --surface: #1a1d21;
+      --surface-2: #22262c;
+      --text: #e6e8eb;
+      --muted: #9aa4b2;
+      --line: #2e333a;
+      --accent: #6aa0ff;
+      --accent-soft: #1d2a40;
+      --warn: #e5b45a;
+      --warn-soft: #2e2716;
+      --err: #f07a7a;
+      --err-soft: #331d1d;
+      --ok: #6cc596;
+      --ok-soft: #16291f;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121417;
+    --surface: #1a1d21;
+    --surface-2: #22262c;
+    --text: #e6e8eb;
+    --muted: #9aa4b2;
+    --line: #2e333a;
+    --accent: #6aa0ff;
+    --accent-soft: #1d2a40;
+    --warn: #e5b45a;
+    --warn-soft: #2e2716;
+    --err: #f07a7a;
+    --err-soft: #331d1d;
+    --ok: #6cc596;
+    --ok-soft: #16291f;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .35);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-snap-type: y mandatory; scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 17px/1.55 "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+  }
+  code, pre, kbd { font-family: "Cascadia Code", Consolas, "SF Mono", Menlo, monospace; }
+  code { background: var(--surface-2); padding: .08em .35em; border-radius: 4px; font-size: .9em; }
+  kbd {
+    display: inline-block; padding: .05em .45em; border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 5px; background: var(--surface); font-size: .85em;
+  }
+  a { color: var(--accent); }
+
+  .slide {
+    min-height: 100vh;
+    scroll-snap-align: start;
+    display: flex;
+    align-items: center;
+    padding: 56px 16px 72px;
+    border-bottom: 1px solid var(--line);
+  }
+  .inner { width: 100%; max-width: 1180px; margin: 0 auto; }
+  .kicker {
+    font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); font-weight: 600;
+    margin-bottom: 8px;
+  }
+  h1 { font-size: clamp(32px, 5vw, 54px); line-height: 1.1; margin: 0 0 16px; }
+  h2 { font-size: clamp(26px, 3.4vw, 38px); line-height: 1.15; margin: 0 0 14px; }
+  h3 { font-size: 19px; margin: 0 0 6px; }
+  p { margin: 0 0 12px; }
+  .lead { font-size: clamp(18px, 2vw, 22px); color: var(--muted); max-width: 860px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 14px; }
+
+  .grid { display: grid; gap: 18px; }
+  .g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .split { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 28px; align-items: center; }
+  .split.rev { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
+  @media (max-width: 900px) {
+    .g2, .g3, .g4, .split, .split.rev { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px;
+    box-shadow: var(--shadow);
+  }
+  .card p:last-child { margin-bottom: 0; }
+  .icon { font-size: 26px; line-height: 1; margin-bottom: 8px; }
+
+  figure { margin: 0; }
+  .shot {
+    display: block; width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line);
+    box-shadow: var(--shadow); cursor: zoom-in; background: #1e1f22;
+  }
+  figcaption { font-size: 14px; color: var(--muted); margin-top: 8px; }
+  .badge {
+    display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent); vertical-align: middle;
+  }
+  .badge.gif { background: var(--ok-soft); color: var(--ok); }
+
+  ol.steps { padding-left: 0; list-style: none; counter-reset: s; margin: 0; }
+  ol.steps li { counter-increment: s; position: relative; padding: 0 0 12px 40px; }
+  ol.steps li::before {
+    content: counter(s); position: absolute; left: 0; top: 1px; width: 26px; height: 26px; border-radius: 50%;
+    background: var(--accent); color: #fff; font-size: 14px; font-weight: 700; display: grid; place-items: center;
+  }
+  ul.clean { padding-left: 20px; margin: 0; }
+  ul.clean li { margin-bottom: 6px; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 15px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+  .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 4px 8px; }
+
+  pre {
+    background: var(--code-bg); color: var(--code-text); padding: 14px 16px; border-radius: 10px; overflow-x: auto;
+    font-size: 14px; line-height: 1.5; margin: 0;
+  }
+  pre .c { color: #6a9955; }
+  pre .k { color: #c586c0; }
+  pre .t { color: #4ec9b0; }
+  pre .n { color: #b5cea8; }
+  pre .bad { text-decoration: underline wavy #e5b45a; text-underline-offset: 3px; }
+  pre .hl { color: #e5b45a; }
+
+  .pill { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 6px; }
+  .pill.def { background: var(--err-soft); color: var(--err); }
+  .pill.pos { background: var(--warn-soft); color: var(--warn); }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); }
+
+  .flow { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; margin: 18px 0; }
+  .flow .box {
+    flex: 1 1 140px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px;
+    box-shadow: var(--shadow);
+  }
+  .flow .box b { display: block; margin-bottom: 4px; }
+  .flow .box span { font-size: 14px; color: var(--muted); }
+  .flow .arrow { align-self: center; color: var(--muted); font-size: 22px; }
+  @media (max-width: 700px) { .flow .arrow { display: none; } }
+
+  .stat { text-align: center; }
+  .stat .n { font-size: 44px; font-weight: 700; line-height: 1.1; }
+  .stat .l { font-size: 14px; color: var(--muted); }
+
+  .callout {
+    border-left: 4px solid var(--accent); background: var(--accent-soft); padding: 12px 16px; border-radius: 0 10px 10px 0;
+    margin-top: 14px;
+  }
+  .callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+
+  /* navigation */
+  .nav {
+    position: fixed; right: 16px; bottom: 16px; display: flex; gap: 8px; align-items: center; z-index: 10;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 8px; box-shadow: var(--shadow);
+  }
+  .nav button {
+    border: 0; background: transparent; color: var(--text); font-size: 18px; width: 34px; height: 34px; border-radius: 50%;
+    cursor: pointer;
+  }
+  .nav button:hover { background: var(--surface-2); }
+  .nav .count { font-size: 13px; color: var(--muted); min-width: 52px; text-align: center; }
+  .progress { position: fixed; top: 0; left: 0; height: 3px; background: var(--accent); z-index: 11; width: 0; transition: width .2s; }
+
+  /* zoom */
+  .zoom {
+    position: fixed; inset: 0; background: rgba(0, 0, 0, .85); display: none; align-items: center; justify-content: center;
+    z-index: 20; padding: 16px; cursor: zoom-out;
+  }
+  .zoom.open { display: flex; }
+  .zoom img { max-width: 100%; max-height: 100%; border-radius: 8px; }
+
+  @media print {
+    html { scroll-snap-type: none; }
+    .nav, .progress { display: none; }
+    .slide { min-height: auto; page-break-after: always; }
+  }
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+
+<!-- 1 · Title -->
+<section class="slide" id="title">
+  <div class="inner split rev">
+    <div>
+      <div class="kicker">SCA · Static Code Analyzer for VS Code · 14 Nov 2026</div>
+      <h1>Find C/C++ run-time errors while you write the code</h1>
+      <p class="lead">SCA is a VS Code extension. It reads your C and C++ files every time you save and marks code that can
+        crash or break a coding rule — before the code is compiled, tested or flashed.</p>
+      <p class="muted small">This walkthrough explains why SCA exists, how it works, and how to use it — with real screenshots
+        and short recordings from VS Code on the test project <b>car-control</b>.</p>
+    </div>
+    <figure>
+      <img class="shot" src="img/06-hover.png" alt="VS Code with the SCA Issue Monitor on the left and a division-by-zero warning shown on hover in battery.c" loading="lazy">
+      <figcaption>A real finding: <code>pack_mv / cells</code> — nobody checks that <code>cells</code> is not 0.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- 2 · Why -->
+<section class="slide" id="why">
+  <div class="inner">
+    <div class="kicker">Purpose</div>
+    <h2>Why a tool that checks code while you type?</h2>
+    <p class="lead">Some bugs do not show up in a normal test. They wait for one special value — and then the controller stops.</p>
+    <div class="grid g3" style="margin-top:18px">
+      <div class="card">
+        <div class="icon">💥</div>
+        <h3>The bug</h3>
+        <p><code>return pack_mv / cells;</code> works in every test, because the tests always pass 12 cells. One day a
+          corrupted configuration passes <b>0</b>: division by zero, the ECU resets.</p>
+      </div>
+      <div class="card">
+        <div class="icon">⏱️</div>
+        <h3>The cost</h3>
+        <p>Found by the developer while typing: seconds to fix. Found in system test, at the customer or in the car: days,
+          a recall, or a safety case. The earlier, the cheaper.</p>
+      </div>
+      <div class="card">
+        <div class="icon">🛡️</div>
+        <h3>The idea of SCA</h3>
+        <p>Read the code like a careful reviewer — on every save — and point at lines where a value <b>can</b> go wrong
+          or a coding rule is broken. No compile, no test run needed.</p>
+      </div>
+    </div>
+    <div class="callout">
+      <b>Static analysis</b> means: the code is examined <b>without running it</b>. SCA does not need hardware, a build or test
+      data — only the source file.
+    </div>
+  </div>
+</section>
+
+<!-- 3 · What SCA is -->
+<section class="slide" id="what">
+  <div class="inner">
+    <div class="kicker">The product</div>
+    <h2>What SCA is — in one slide</h2>
+    <div class="grid g2" style="margin-top:10px">
+      <div class="card">
+        <h3>For the developer</h3>
+        <ul class="clean">
+          <li>A <b>VS Code extension</b> — a shield icon in the left bar.</li>
+          <li>You choose the files or folders to watch: <b>Add to Monitor</b>.</li>
+          <li>Every <b>save</b> (also autosave) re-checks the file within a fraction of a second.</li>
+          <li>Results appear in three places: the <b>Issue Monitor</b>, wavy underlines in the code, and the <b>Problems</b> panel.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Under the hood</h3>
+        <ul class="clean">
+          <li><b>Own analysis engine</b>, written in TypeScript, runs inside VS Code. No server, no licence key, works offline.</li>
+          <li>C/C++ is read with <b>tree-sitter</b> (an open-source parser) into a syntax tree.</li>
+          <li>Small <b>checks</b> walk that tree and report <b>findings</b>.</li>
+          <li>A <b>benchmark</b> measures every check against a project with planted bugs.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="grid g4" style="margin-top:18px">
+      <div class="card stat"><div class="n">3</div><div class="l">checks today</div></div>
+      <div class="card stat"><div class="n">7/10</div><div class="l">planted issues found (covered categories)</div></div>
+      <div class="card stat"><div class="n" style="color:var(--ok)">0</div><div class="l">false alarms on SAFE lines</div></div>
+      <div class="card stat"><div class="n">~0.1 s</div><div class="l">to check all 32 files of car-control</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- 4 · How it works -->
+<section class="slide" id="how">
+  <div class="inner">
+    <div class="kicker">How it works</div>
+    <h2>From “Save” to a warning in the editor</h2>
+    <div class="flow" aria-label="Analysis pipeline">
+      <div class="box"><b>1 · You save</b><span><kbd>Ctrl</kbd>+<kbd>S</kbd> or autosave, on a monitored file</span></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>2 · Short wait</b><span>300 ms. Another save restarts the wait, so a burst of autosaves = one run</span></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>3 · Parse</b><span>tree-sitter turns the text into a syntax tree</span></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>4 · Check</b><span>each check walks the tree and returns findings</span></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>5 · Show</b><span>Issue Monitor, squiggles, Problems panel, status bar</span></div>
+    </div>
+    <div class="grid g2">
+      <div class="card">
+        <h3>A newer save wins</h3>
+        <p>If you save again while a file is still being checked, the old run is cancelled. You always see the result
+          for the code that is on disk now.</p>
+      </div>
+      <div class="card">
+        <h3>One known limit</h3>
+        <p>The parser reads the code <b>before</b> the preprocessor. Macros are not expanded. When a function cannot be
+          parsed cleanly (often because of macros), SCA stays quiet for that function instead of guessing.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 5 · Words -->
+<section class="slide" id="words">
+  <div class="inner">
+    <div class="kicker">Vocabulary</div>
+    <h2>Seven words you need</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Word</th><th>Meaning</th><th>Example</th></tr></thead>
+        <tbody>
+          <tr><td><b>Monitor</b></td><td>The list of files and folders SCA watches in this workspace.</td><td>the <code>src</code> folder</td></tr>
+          <tr><td><b>Finding</b></td><td>One reported problem: a file, a line, a rule and a message.</td><td><code>battery.c</code> line 20</td></tr>
+          <tr><td><b>Rule ID</b></td><td>Name of the check that reported it: <code>&lt;rule set&gt;:&lt;rule&gt;</code>.</td><td><code>runtime-bugfinder:div-zero</code></td></tr>
+          <tr><td><span class="pill def">Definite</span></td><td>SCA is sure: the problem is there on every run.</td><td><code>x / 0</code>, a <code>goto</code></td></tr>
+          <tr><td><span class="pill pos">Possible</span></td><td>It can happen for some input. Check the callers or add a guard.</td><td><code>x / n</code>, <code>n</code> unchecked</td></tr>
+          <tr><td><b>Guard</b></td><td>A test before the risky line that rules the bad value out.</td><td><code>if (n == 0) return 0;</code></td></tr>
+          <tr><td><b>False positive</b></td><td>A finding on correct code. We count them and keep them at zero.</td><td>see “How we measure”</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- 6 · Install -->
+<section class="slide" id="install">
+  <div class="inner split">
+    <div>
+      <div class="kicker">Step 1</div>
+      <h2>Install SCA</h2>
+      <ol class="steps">
+        <li>You need <b>Node.js 22+</b>, <b>Git</b> and <b>VS Code</b>.</li>
+        <li>Get the code and run the installer in PowerShell.</li>
+        <li>Reload VS Code: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> → <i>Developer: Reload Window</i>.</li>
+        <li>Check: the <b>shield icon</b> appears in the left bar.</li>
+      </ol>
+      <p class="muted small">Update later: <code>git pull</code> and run the installer again. Remove: add <code>-Uninstall</code>.</p>
+    </div>
+    <pre><span class="c"># once</span>
+git clone https://github.com/Tomasi12/sca.git
+cd sca
+
+<span class="c"># build, package and install into VS Code</span>
+powershell -ExecutionPolicy Bypass -File .\installer.ps1
+
+<span class="c"># optional: run all tests first, install only if green</span>
+powershell -ExecutionPolicy Bypass -File .\installer.ps1 -RunTests</pre>
+  </div>
+</section>
+
+<!-- 7 · Open project + SCA view -->
+<section class="slide" id="open">
+  <div class="inner">
+    <div class="kicker">Step 2</div>
+    <h2>Open your project and the SCA view</h2>
+    <div class="grid g2">
+      <figure>
+        <img class="shot" src="img/01-start.png" alt="VS Code Explorer with the car-control project: include, src with C files, expected_findings.csv" loading="lazy">
+        <figcaption><b>File → Open Folder…</b> → your project (here: car-control). The shield is the 6th icon in the left bar.</figcaption>
+      </figure>
+      <figure>
+        <img class="shot" src="img/02-issue-monitor-empty.png" alt="SCA Issue Monitor view, empty, with the text No files are monitored yet and an Add Current File button" loading="lazy">
+        <figcaption>Click the <b>shield</b>: the <b>Issue Monitor</b> opens. It is empty until you add files.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- 8 · Add to monitor -->
+<section class="slide" id="add">
+  <div class="inner split">
+    <div>
+      <div class="kicker">Step 3</div>
+      <h2>Tell SCA what to watch</h2>
+      <ol class="steps">
+        <li>In the <b>Explorer</b>, right-click a folder (or one or more files).</li>
+        <li>Choose <b>Add to Monitor</b>.</li>
+        <li>Open the shield view: every C/C++ file of that folder is listed and already checked.</li>
+      </ol>
+      <p class="muted small">Folders like <code>build</code>, <code>third_party</code>, <code>node_modules</code> are skipped
+        (setting <code>sca.monitor.exclude</code>). The list is remembered for this workspace.</p>
+      <figure style="margin-top:12px">
+        <img class="shot" src="img/03-context-menu.png" alt="Explorer context menu on the src folder with the entry Add to Monitor highlighted" loading="lazy">
+        <figcaption>The right-click menu on <code>src</code>.</figcaption>
+      </figure>
+    </div>
+    <figure>
+      <img class="shot" src="img/gif-add-to-monitor.gif" alt="Recording: open the empty Issue Monitor, go back to the Explorer, right-click src, Add to Monitor, open the Issue Monitor with findings, point at the status bar" loading="lazy">
+      <figcaption><span class="badge gif">recording</span> Empty monitor → right-click <code>src</code> → <b>Add to Monitor</b> → findings appear → status bar shows <b>SCA: 7 issues</b>.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- 9 · Read the results -->
+<section class="slide" id="results">
+  <div class="inner split rev">
+    <figure>
+      <img class="shot" src="img/04-issue-monitor-findings.png" alt="Issue Monitor listing car-control files; adc.c, battery.c, pid.c have possible division-by-zero warnings, motor_ctrl.c a switch-default finding and util.c three goto findings" loading="lazy">
+      <figcaption>All 16 files of <code>src</code>. Files with findings are expanded.</figcaption>
+    </figure>
+    <div>
+      <div class="kicker">Step 4</div>
+      <h2>Read the Issue Monitor</h2>
+      <ul class="clean">
+        <li><b>One line per file</b> with a short summary: <i>1 definite · 0 possible</i>, or <i>no issues</i>.</li>
+        <li><b>Under it, one line per finding</b> — the message. Hover it for the full text and rule ID.</li>
+        <li><b>Icon = certainty:</b> <span class="pill def">red ✕ definite</span> <span class="pill pos">yellow ⚠ possible</span>.</li>
+        <li>Title bar buttons: <b>+</b> add the open file · <b>▶</b> analyze now · <b>Remove All</b>.</li>
+        <li><b>×</b> next to a file removes it from the monitor.</li>
+      </ul>
+      <figure style="margin-top:14px">
+        <img class="shot" src="img/10-status-bar.png" alt="Status bar showing 0 errors, 7 warnings and SCA: 7 issues" loading="lazy" style="max-width:400px">
+        <figcaption>The status bar: <b>SCA: N issues</b> (or <i>SCA: analyzing…</i>). Click it to open the Issue Monitor.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- 10 · Jump to code -->
+<section class="slide" id="jump">
+  <div class="inner split">
+    <div>
+      <div class="kicker">Step 5</div>
+      <h2>Jump to the line and read why</h2>
+      <ol class="steps">
+        <li><b>Click a finding</b> in the Issue Monitor: the file opens at that line, the divisor is selected.</li>
+        <li>The risky code has a <b>wavy underline</b>.</li>
+        <li><b>Hover</b> it: the message says what is wrong, the certainty, and the rule ID.</li>
+      </ol>
+      <div class="callout">
+        <b>Reading this finding:</b> <code>cells</code> is a parameter of <code>battery_cell_mv()</code>. Nothing in the
+        function checks it against 0, so any caller can pass 0 → <span class="pill pos">possible</span> division by zero.
+      </div>
+    </div>
+    <figure>
+      <img class="shot" src="img/gif-open-finding.gif" alt="Recording: click the battery.c finding in the Issue Monitor, battery.c opens at line 20, mouse hovers the squiggle and the message appears" loading="lazy">
+      <figcaption><span class="badge gif">recording</span> Click the finding → editor opens at line 20 → hover shows the explanation.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- 11 · Problems panel -->
+<section class="slide" id="problems">
+  <div class="inner split rev">
+    <figure>
+      <img class="shot" src="img/07-problems-panel.png" alt="Problems panel listing the 7 SCA findings grouped by file with rule IDs and line numbers" loading="lazy">
+      <figcaption>The <b>Problems</b> panel (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd>) lists the same findings, source <b>SCA</b>.</figcaption>
+    </figure>
+    <div>
+      <div class="kicker">Also there</div>
+      <h2>Same findings, the place you already know</h2>
+      <ul class="clean">
+        <li>SCA findings use VS Code's normal problem list, so <kbd>F8</kbd> jumps to the next one.</li>
+        <li>Each entry shows the <b>rule ID</b>, e.g. <code>SCA(sca-own:switch-default)</code>, and <b>line, column</b>.</li>
+        <li>Here the icon shows <b>severity</b>: run-time risks and rule violations are both <b>warnings</b> today.
+          The Issue Monitor shows <b>certainty</b> instead (red = definite).</li>
+        <li>Filter by typing <code>SCA</code> in the panel's filter box.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- 12 · Fix and save -->
+<section class="slide" id="fix">
+  <div class="inner split">
+    <div>
+      <div class="kicker">Step 6</div>
+      <h2>Fix the code — save — the warning is gone</h2>
+      <ol class="steps">
+        <li>Add a <b>guard</b> before the division: <code>if (cells == 0U) { return 0U; }</code></li>
+        <li><b>Save</b> (<kbd>Ctrl</kbd>+<kbd>S</kbd>) — or let autosave do it.</li>
+        <li>The status bar briefly shows <i>analyzing…</i>, then <b>SCA: 6 issues</b>. <code>battery.c</code> → <i>no issues</i>.</li>
+      </ol>
+      <p class="muted small">Turn on autosave with <b>File → Auto Save</b>. SCA waits 300 ms after the last save, so typing
+        with autosave does not cause a check per keystroke.</p>
+      <figure style="margin-top:12px">
+        <img class="shot" src="img/11-after-fix.png" alt="battery.c with the added guard on line 20; Issue Monitor shows battery.c no issues; status bar SCA: 6 issues" loading="lazy">
+        <figcaption>After the save: the guard on line 20, <code>battery.c — no issues</code>.</figcaption>
+      </figure>
+    </div>
+    <figure>
+      <img class="shot" src="img/gif-fix-on-save.gif" alt="Recording: typing the guard line in battery.c, saving, the squiggle and the Issue Monitor entry disappear, status bar changes to 6 issues" loading="lazy">
+      <figcaption><span class="badge gif">recording</span> Type the guard → save → finding disappears, count drops from 7 to 6.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- 13 · Commands & settings -->
+<section class="slide" id="commands">
+  <div class="inner">
+    <div class="kicker">Reference</div>
+    <h2>Commands and settings</h2>
+    <div class="grid g2">
+      <figure>
+        <img class="shot" src="img/08-command-palette.png" alt="Command palette with SCA commands: Add to Monitor, Analyze Now, Focus on Issue Monitor View, Remove All from Monitor, Remove from Monitor, Show Info" loading="lazy">
+        <figcaption><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> → type <code>SCA:</code></figcaption>
+      </figure>
+      <figure>
+        <img class="shot" src="img/09-settings.png" alt="Settings filtered to the SCA extension: Analysis Debounce Ms 300, Analysis Run On Save checked, Monitor Exclude patterns" loading="lazy">
+        <figcaption><kbd>Ctrl</kbd>+<kbd>,</kbd> → search <code>@ext:tomasi12.sca</code></figcaption>
+      </figure>
+    </div>
+    <div class="grid g2" style="margin-top:18px">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Command</th><th>Does</th></tr></thead>
+          <tbody>
+            <tr><td>SCA: Add to Monitor</td><td>Watch the file/folder (menu, palette, <b>+</b>)</td></tr>
+            <tr><td>SCA: Remove from Monitor</td><td>Stop watching it (<b>×</b> in the view)</td></tr>
+            <tr><td>SCA: Remove All from Monitor</td><td>Empty the monitor</td></tr>
+            <tr><td>SCA: Analyze Now</td><td>Check every monitored file at once (<b>▶</b>)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Setting</th><th>Default</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>sca.analysis.runOnSave</code></td><td>on</td><td>Check on every save</td></tr>
+            <tr><td><code>sca.analysis.debounceMs</code></td><td>300</td><td>Wait after a save</td></tr>
+            <tr><td><code>sca.monitor.exclude</code></td><td>build, third_party, …</td><td>Folders never checked</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 14 · Checks -->
+<section class="slide" id="checks">
+  <div class="inner">
+    <div class="kicker">What is checked today</div>
+    <h2>Three checks — each one tested on good and bad code</h2>
+    <div class="grid g3">
+      <div class="card">
+        <span class="pill pos">possible</span> <span class="pill def">definite</span>
+        <h3 style="margin-top:8px">Division by zero</h3>
+        <p class="small muted"><code>runtime-bugfinder:div-zero</code></p>
+        <p class="small">Divisor is a function parameter that nobody checks against 0 → possible. Divisor is the constant 0 → definite.</p>
+      </div>
+      <div class="card">
+        <span class="pill def">definite</span>
+        <h3 style="margin-top:8px">switch without default</h3>
+        <p class="small muted"><code>sca-own:switch-default</code></p>
+        <p class="small">Every <code>switch</code> needs a <code>default</code> that handles unexpected values. Nested switches need their own.</p>
+      </div>
+      <div class="card">
+        <span class="pill def">definite</span>
+        <h3 style="margin-top:8px">No goto</h3>
+        <p class="small muted"><code>sca-own:goto</code></p>
+        <p class="small">Every <code>goto</code> is reported. It makes the control flow hard to follow and to review.</p>
+      </div>
+    </div>
+    <div class="grid g2" style="margin-top:18px">
+      <div>
+        <p><b>Reported</b> <span class="pill pos">possible</span></p>
+<pre><span class="t">u16</span> battery_cell_mv(<span class="t">u16</span> pack_mv, <span class="t">u8</span> cells)
+{
+    <span class="k">return</span> (<span class="t">u16</span>)(pack_mv / <span class="bad">cells</span>);
+}</pre>
+      </div>
+      <div>
+        <p><b>Not reported</b> <span class="pill ok">guarded</span></p>
+<pre><span class="t">u16</span> battery_cell_mv(<span class="t">u16</span> pack_mv, <span class="t">u8</span> cells)
+{
+    <span class="k">if</span> (cells == <span class="n">0U</span>) { <span class="k">return</span> <span class="n">0U</span>; }
+    <span class="k">return</span> (<span class="t">u16</span>)(pack_mv / cells);
+}</pre>
+      </div>
+    </div>
+    <p class="small muted" style="margin-top:12px">Guards SCA understands: <code>if (n != 0)</code>, <code>if (n &gt; 0)</code>, <code>if (n)</code>,
+      the <code>else</code> of <code>if (n == 0)</code>, <code>n ? a / n : 0</code>, <code>n != 0 &amp;&amp; …</code>, an earlier
+      <code>if (n == 0) return/goto/break/continue/abort();</code>, an earlier <code>assert(n != 0)</code>, and a <code>static</code>
+      function whose callers all pass non-zero constants.</p>
+  </div>
+</section>
+
+<!-- 15 · Benchmark -->
+<section class="slide" id="measure">
+  <div class="inner split">
+    <div>
+      <div class="kicker">How we measure</div>
+      <h2>A test project with planted bugs</h2>
+      <p><b>car-control</b> is a small embedded-style C99 controller written only to test SCA. Each planted problem has a
+        marker on its line:</p>
+      <ul class="clean">
+        <li><code>/* DEFECT(div_zero): … */</code> — a run-time error: SCA <b>should</b> report it.</li>
+        <li><code>/* RULE(goto): … */</code> — a rule violation: SCA <b>should</b> report it.</li>
+        <li><code>/* SAFE(div_zero): … */</code> — correct code that looks risky: reporting it is a <b>false positive</b>.</li>
+      </ul>
+      <p>The markers are collected into <code>expected_findings.csv</code> — the <b>answer key</b>. One command compares SCA with it:</p>
+      <pre>npm run benchmark -- ../dummy_project</pre>
+    </div>
+    <div>
+<pre>SCA benchmark: dummy_project
+============================
+
+category        expected  found  missed  false pos.
+div_zero        <span class="n">6</span>         <span class="n">3</span>      <span class="hl">3</span>       <span class="n">0</span>
+switch_default  <span class="n">1</span>         <span class="n">1</span>      <span class="n">0</span>       <span class="n">0</span>
+goto            <span class="n">3</span>         <span class="n">3</span>      <span class="n">0</span>       <span class="n">0</span>
+TOTAL           <span class="n">10</span>        <span class="n">7</span>      <span class="hl">3</span>       <span class="n">0</span>
+
+Recall (covered categories): <span class="n">70 %</span>
+
+Missed:
+  src/scheduler.c:50   div_zero  struct field as divisor
+  src/wheel_speed.c:28 div_zero  global calibration value
+  src/wheel_speed.c:57 div_zero  local float at standstill
+
+<span class="c">32 files, 7 findings, 3 checks, ~110 ms</span></pre>
+      <p class="small muted" style="margin-top:8px">Result on car-control as committed on 14 Nov 2026. The 3 misses need value
+        tracking (fields, globals, locals) — the next big step.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 16 · Limits & next -->
+<section class="slide" id="next">
+  <div class="inner">
+    <div class="kicker">Honest status</div>
+    <h2>What SCA does not do yet — and what comes next</h2>
+    <div class="grid g2">
+      <div class="card">
+        <h3>Limits today</h3>
+        <ul class="clean">
+          <li>Division by zero only for <b>parameters</b> and the constant 0 — not yet for globals, struct fields, locals.</li>
+          <li>Macros are not expanded; functions that do not parse cleanly are skipped.</li>
+          <li>One file at a time: no cross-file reasoning (except <code>static</code> callers in the same file).</li>
+          <li>17 bug categories of car-control have no check yet (out-of-bounds, overflow, null pointer, …).</li>
+          <li>SCA <b>finds</b> problems; it does not <b>prove</b> that code is free of them.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Next steps</h3>
+        <ul class="clean">
+          <li><b>Value tracking</b> inside a function → more divisors, null pointers, uninitialized variables.</li>
+          <li>New checks by size of the gap: <b>out-of-bounds</b> (9 planted), <b>overflow</b> (5), shifts, missing <code>break</code>.</li>
+          <li><b>Justify</b> a finding (reviewed, OK) so it stops showing as open.</li>
+          <li>Run the benchmark in <b>CI</b> on every push; a new false positive fails the build.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 17 · Cheat sheet -->
+<section class="slide" id="cheatsheet">
+  <div class="inner">
+    <div class="kicker">Cheat sheet</div>
+    <h2>Everything on one card</h2>
+    <div class="grid g3">
+      <div class="card">
+        <h3>Start</h3>
+        <ol class="steps small">
+          <li>Open the project folder.</li>
+          <li>Right-click <code>src</code> → <b>Add to Monitor</b>.</li>
+          <li>Click the <b>shield</b>.</li>
+        </ol>
+      </div>
+      <div class="card">
+        <h3>Daily work</h3>
+        <ol class="steps small">
+          <li>Write code, <b>save</b>.</li>
+          <li>Watch the status bar: <b>SCA: N issues</b>.</li>
+          <li>Click a finding → fix → save.</li>
+        </ol>
+      </div>
+      <div class="card">
+        <h3>Understand a finding</h3>
+        <ul class="clean small">
+          <li><span class="pill def">definite</span> fix it.</li>
+          <li><span class="pill pos">possible</span> add a guard, or make sure no caller passes the bad value.</li>
+          <li>Rule ID tells which check reported it.</li>
+          <li>Logs: <b>View → Output → SCA</b>.</li>
+        </ul>
+      </div>
+    </div>
+    <p class="muted small" style="margin-top:22px">More: <a href="../../README.md">README</a> ·
+      <a href="../tech-stack.md">tech stack</a> · <a href="../../CHANGELOG.md">changelog</a> ·
+      <a href="../../catalog/README.md">rule catalog</a>. Screenshots and recordings were taken on 14 Nov 2026 in VS Code 1.146
+      with SCA 0.0.1 on car-control.</p>
+  </div>
+</section>
+
+<nav class="nav" aria-label="Slide navigation">
+  <button type="button" id="prev" aria-label="Previous slide">↑</button>
+  <span class="count" id="count">1 / 17</span>
+  <button type="button" id="next-btn" aria-label="Next slide">↓</button>
+  <button type="button" id="theme" aria-label="Toggle light / dark">◐</button>
+</nav>
+
+<div class="zoom" id="zoom" role="dialog" aria-label="Enlarged image"><img alt=""></div>
+
+<script>
+  (function () {
+    const slides = Array.from(document.querySelectorAll(".slide"));
+    const count = document.getElementById("count");
+    const progress = document.getElementById("progress");
+    let current = 0;
+
+    function update() {
+      const mid = window.scrollY + window.innerHeight / 2;
+      let idx = 0;
+      slides.forEach((s, i) => { if (s.offsetTop <= mid) idx = i; });
+      current = idx;
+      count.textContent = (idx + 1) + " / " + slides.length;
+      progress.style.width = ((idx + 1) / slides.length * 100) + "%";
+    }
+    function go(i) {
+      const t = Math.max(0, Math.min(slides.length - 1, i));
+      slides[t].scrollIntoView({ behavior: "smooth" });
+    }
+    window.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    document.getElementById("prev").addEventListener("click", () => go(current - 1));
+    document.getElementById("next-btn").addEventListener("click", () => go(current + 1));
+    document.addEventListener("keydown", (e) => {
+      if (zoom.classList.contains("open")) {
+        if (e.key === "Escape") zoom.classList.remove("open");
+        return;
+      }
+      if (["ArrowDown", "PageDown", "ArrowRight", " "].includes(e.key)) { e.preventDefault(); go(current + 1); }
+      if (["ArrowUp", "PageUp", "ArrowLeft"].includes(e.key)) { e.preventDefault(); go(current - 1); }
+      if (e.key === "Home") { e.preventDefault(); go(0); }
+      if (e.key === "End") { e.preventDefault(); go(slides.length - 1); }
+    });
+
+    // Theme toggle (remembered per viewer when storage is available)
+    const root = document.documentElement;
+    try {
+      const saved = localStorage.getItem("sca-deck-theme");
+      if (saved) root.setAttribute("data-theme", saved);
+    } catch (e) { /* storage unavailable */ }
+    document.getElementById("theme").addEventListener("click", () => {
+      const dark = root.getAttribute("data-theme") === "dark" ||
+        (!root.getAttribute("data-theme") && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      const next = dark ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      try { localStorage.setItem("sca-deck-theme", next); } catch (e) { /* ignore */ }
+    });
+
+    // Click an image to enlarge it
+    const zoom = document.getElementById("zoom");
+    const zoomImg = zoom.querySelector("img");
+    document.querySelectorAll("img.shot").forEach((img) => {
+      img.addEventListener("click", () => {
+        zoomImg.src = img.src;
+        zoomImg.alt = img.alt;
+        zoom.classList.add("open");
+      });
+    });
+    zoom.addEventListener("click", () => zoom.classList.remove("open"));
+
+    update();
+  })();
+</script>
+</body>
+</html>
