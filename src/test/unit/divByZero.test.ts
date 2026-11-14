@@ -29,7 +29,7 @@ describe("checks/div-zero (unit)", () => {
 
   after(() => parser.dispose());
 
-  for (const sample of ["div_by_zero.c", "div_by_zero_cases.c"]) {
+  for (const sample of ["div_by_zero.c", "div_by_zero_cases.c", "div_by_zero_engine.c"]) {
     it(`matches the markers in tests/samples/${sample}`, () => {
       const file = path.join(SAMPLES, sample);
       const text = fs.readFileSync(file, "utf8");

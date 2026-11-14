@@ -9,6 +9,7 @@ import { registerExportReport } from "./monitor/exportReport";
 import { registerIssueMonitor } from "./monitor/issueMonitor";
 import { MonitorController, registerMonitorCommands } from "./monitor/monitorController";
 import { ProjectManager } from "./monitor/projects";
+import { registerShowCfg } from "./monitor/showCfg";
 import { registerStatusBar } from "./monitor/statusBar";
 
 /** What `activate` returns; used by integration tests (and later by other extensions). */
@@ -46,6 +47,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<ScaApi
     registerMonitorCommands(controller),
     registerStatusBar(issueStore, controller.scheduler),
     registerExportReport(issueStore, version),
+    registerShowCfg(analyzer, projects),
     vscode.commands.registerCommand("sca.showInfo", () => {
       const message = `SCA is active. Languages: ${SUPPORTED_LANGUAGES.join(", ")}.`;
       vscode.window.showInformationMessage(message);

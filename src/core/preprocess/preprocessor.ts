@@ -34,10 +34,13 @@ export class MacroTable implements MacroLookup {
   private readonly map = new Map<string, Macro>();
   /** Names that were #undef'd or never seen, while some branch was unknown: we cannot say. */
   private readonly maybe = new Set<string>();
+  /** valueOf results; checks ask for the same names many times. Cleared on every #define / #undef. */
+  private readonly values = new Map<string, number | undefined>();
 
   constructor(public undefinedIsZero: boolean) {}
 
   define(m: Macro): void {
+    this.values.clear();
     this.map.set(m.name, m);
     if (m.uncertain) {
       this.maybe.add(m.name);
@@ -47,6 +50,7 @@ export class MacroTable implements MacroLookup {
   }
 
   undefine(name: string, uncertain: boolean): void {
+    this.values.clear();
     this.map.delete(name);
     if (uncertain) {
       this.maybe.add(name);
@@ -76,6 +80,17 @@ export class MacroTable implements MacroLookup {
 
   /** Integer value of an object-like macro such as `#define CELLS (4U)`, or undefined. */
   valueOf(name: string, depth = 0): number | undefined {
+    if (depth === 0 && this.values.has(name)) {
+      return this.values.get(name);
+    }
+    const v = this.compute(name, depth);
+    if (depth === 0) {
+      this.values.set(name, v);
+    }
+    return v;
+  }
+
+  private compute(name: string, depth: number): number | undefined {
     const m = this.map.get(name);
     if (!m || m.params || m.uncertain || this.maybe.has(name) || depth > 32) {
       return undefined;

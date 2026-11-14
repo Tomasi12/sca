@@ -88,6 +88,7 @@ src/core/parser/          C/C++ parser (tree-sitter)
 src/monitor/              Issue Monitor, status bar, save trigger (VS Code wiring)
 scripts/                  build helpers (copy-wasm.mjs)
 src/core/checks/          native checks
+src/core/engine/          value engine (control-flow graph, value ranges, solver, file summaries)
 src/bench/                headless benchmark (npm run benchmark)
 src/test/unit/            unit tests
 src/test/integration/     integration tests

@@ -72,6 +72,7 @@ Click the **shield icon** in the Activity Bar to open **SCA → Issue Monitor**.
 | Stop monitoring | **SCA: Remove from Monitor** (same menus), or the **×** next to a file in the Issue Monitor |
 | Start over | The **Remove All** button in the Issue Monitor title bar |
 | Analyze all monitored files now | **SCA: Analyze Now** (command palette), or the **▶** button in the Issue Monitor title bar |
+| See what SCA knows inside a function | Right-click in the function → **SCA: Show Control-Flow Graph** |
 
 - Only C/C++ files are monitored (`.c .h .cpp .cc .cxx .hpp .hh .hxx`). A monitored folder includes all of them below it.
 - Folders matching `sca.monitor.exclude` are skipped (default: `node_modules`, `.git`, `third_party`, `build`, `out`).
@@ -83,19 +84,50 @@ Click the **shield icon** in the Activity Bar to open **SCA → Issue Monitor**.
 #### Checks
 | Rule ID | Reports | Certainty |
 |---|---|---|
-| `runtime-bugfinder:div-zero` | `/` or `%` (also `/=`, `%=`) by the constant 0 | definite (error) |
-| `runtime-bugfinder:div-zero` | `/` or `%` by a function parameter that is not checked against 0 first | possible (warning) |
+| `runtime-bugfinder:div-zero` | `/` or `%` (also `/=`, `%=`) by the constant 0, or by a value that is always 0 at that point | definite (error) |
+| `runtime-bugfinder:div-zero` | `/` or `%` by a value that can be 0, when SCA can name where the 0 comes from | possible (warning) |
 | `sca-own:switch-default` | `switch` without a `default` clause (a nested switch needs its own) | definite (warning) |
 | `sca-own:goto` | every `goto` statement | definite (warning) |
 
-A parameter counts as checked when the division is only reached after a test that rules out 0:
-`if (n != 0)`, `if (n > 0)`, `if (n)`, `n ? a / n : 0`, `n != 0 && ...`, the `else` of `if (n == 0)`,
-an earlier `if (n == 0) return ...;` (or `goto` / `break` / `continue` / `abort()`), or an earlier `assert(n != 0)`.
+div-zero runs on the **value engine** (see [How the value engine works](#how-the-value-engine-works)): it follows
+every path through the function and knows the divisor's range at the division. Where a 0 can come from:
+
+| Source of the 0 | Example |
+|---|---|
+| a parameter not checked first | `int avg(int s, int n) { return s / n; }` |
+| a 0 still there on some path | `d = 0; if (m > 3) d = m; ... x / d` |
+| a loop counter's first value | `for (i = 0; i < n; i++) s += a / i;` |
+| a `static` object that some code in the file sets to 0 | `memset(tab, 0, ...)`; a store of an unchecked parameter |
+| a function in the same file that can return 0 | `return a / count_or_zero(x);` |
+
+Conditions narrow the value: `if` / `else`, loops, `switch`, `?:`, `&&` / `||`, early `return` / `break` /
+`continue` / `goto` / `abort()`, `assert(...)`. Values SCA knows nothing about (globals from other files, fields
+behind pointer parameters, functions from other files) never give a finding: "unknown" is not "can be 0".
 A `static` function whose callers in the file all pass a non-zero constant is not reported.
 
-Not checked yet: globals, struct fields, locals and return values as divisors (needs value tracking).
-Functions that tree-sitter cannot fully parse (often because of macros) are skipped.
-Examples: [tests/samples/div_by_zero_cases.c](tests/samples/div_by_zero_cases.c), [tests/samples/coding_rules.c](tests/samples/coding_rules.c).
+Not covered: functions with statements the engine cannot model yet (some C++: `try`, range-`for`) or that exceed the
+time budget, and functions tree-sitter cannot fully parse (often because of macros). Only constant-0 divisors are
+reported there. Examples: [tests/samples/div_by_zero_cases.c](tests/samples/div_by_zero_cases.c),
+[tests/samples/div_by_zero_engine.c](tests/samples/div_by_zero_engine.c), [tests/samples/coding_rules.c](tests/samples/coding_rules.c).
+
+#### How the value engine works
+`src/core/engine/`, for C functions:
+
+1. **Control-flow graph** (`cfg.ts`): blocks and edges for `if`, loops, `switch` (with fall-through), `goto`,
+   `break`, `continue` and `return`. The first round of a loop is kept apart ("peeled"), so "the loop ran at least once"
+   and "the loop never ran" do not mix.
+2. **Values** (`value.ts`): each tracked variable has a range `[lo, hi]`, a *zero witness* (where a 0 can come from),
+   whether it is set on all paths, some, or none, and for pointers: null, not null, or maybe null.
+3. **Solver** (`interpreter.ts`): runs the graph until nothing changes; loops are widened to the type's limits after a few
+   rounds, so they always end. Conditions narrow values on each branch (`if (n > 0)` gives `n ∈ [1, max]` inside).
+4. **File summaries** (`summaries.ts`): stores to `static` objects, return values of functions in the file, and the
+   constant arguments of `static` functions. They are computed only when a finding depends on them.
+5. **Time budget**: at most 4,000 block visits and 60 ms per function, 1.5 s per file. Code over budget is skipped quietly,
+   so the editor never waits for it.
+
+**SCA: Show Control-Flow Graph** (editor context menu, or the command palette with the cursor in a function) opens the
+graph of that function with the values at the start of every block, e.g.
+`d = [0, 2147483647] (0: the constant 0)`. Useful to understand a finding or a missed one.
 
 #### When files are analyzed
 - When a file is added to the monitor.
@@ -222,12 +254,12 @@ TypeScript is compiled into the `out/` folder. No output means no errors.
 ```bash
 npm run test:unit
 ```
-Fast unit tests — you should see `102 passing`.
+Fast unit tests — you should see `126 passing`.
 ```bash
 npm test
 ```
 Lint + integration tests. The first run downloads a separate copy of VS Code
-into `.vscode-test/` (about 1 GB on disk after unpacking), then you should see `24 passing`.
+into `.vscode-test/` (about 1 GB on disk after unpacking), then you should see `25 passing`.
 
 ### Step 6 — Open the project in VS Code
 ```bash
@@ -279,8 +311,9 @@ npm run benchmark -- ../dummy_project --json bench.json --fail-on-fp
 Categories in the key that no check covers yet are listed at the end. Which rule IDs answer which category is set in
 `CATEGORY_RULES` (`src/core/checks/index.ts`). `--fail-on-fp` returns exit code 1 when there is a false positive (for CI).
 
-Result on car-control today: **7 of 10** expected issues found in the covered categories (`div_zero` 3/6, `switch_default` 1/1,
-`goto` 3/3), **0 false positives**, 0 unmarked findings.
+Result on car-control today: **9 of 10** expected issues found in the covered categories (`div_zero` 5/6, `switch_default` 1/1,
+`goto` 3/3), **0 false positives**, 0 unmarked findings. The one left (`wheel_speed.c:28`) needs knowledge across files
+(the calibration comes from another module).
 
 ## Commands (reference)
 ```bash
@@ -303,8 +336,8 @@ unit and integration tests on Linux and Windows; on Linux also the car-control b
 a 2,000-file speed test, a SARIF report and the `.vsix` package (both kept as build artifacts).
 
 ## Speed
-5,000 files (~436,000 lines, copies of car-control) take about **7 s** on a laptop the first time; unchanged files come from a
-cache (**~2 s** for all 5,000). Measure with `npm run perf`.
+5,000 files (~436,000 lines, copies of car-control) take about **9.6 s** on a laptop the first time (the value engine adds
+about 3 s); unchanged files come from a cache (**~2 s** for all 5,000). Measure with `npm run perf`.
 
 ## Layout
 ```
@@ -314,6 +347,7 @@ src/extension.ts          extension entry point (VS Code API)
 src/core/                 pure analyzer logic, no VS Code dependency (Finding model, issue store, scheduler)
 src/core/parser/          C/C++ parser (tree-sitter, WASM) and syntax-tree helpers for checks
 src/core/checks/          native checks (div-zero, coding rules; list + category map in index.ts)
+src/core/engine/          value engine: control-flow graph, value ranges, solver, file summaries, Show CFG text
 src/core/preprocess/      #if evaluation and macro table (small preprocessor for analysis)
 src/core/project/         compile_commands.json, .sca.json, per-project context
 src/core/                 also: justify.ts, baseline.ts, report.ts (CSV / SARIF / HTML)
