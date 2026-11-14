@@ -6,15 +6,17 @@
 //   * Return values of functions defined in this file: the join of their `return` values, computed with
 //     unknown parameters (so `return x;` does not turn every caller's argument into a finding).
 //   * Parameters of `static` functions whose only uses are direct calls in this file: the join of the
-//     constant arguments. Otherwise a parameter is "anything the caller passes", which can be 0.
+//     argument values at the calls (each caller is solved for that). An argument nothing is known about
+//     counts as "anything the caller passes", like a parameter of a function other files can call.
 
 import { Node } from "web-tree-sitter";
 import { ConstantLookup, numericValue } from "../checks/syntax";
 import { buildCfg, Cfg, functionName } from "./cfg";
 import { Budget, DEFAULT_BUDGET, Environment, FunctionAnalysis, FunctionModel, Observer, VarInfo } from "./interpreter";
 import { SyntaxCache, withCache } from "./syntaxCache";
+import { Declarations } from "./declarations";
 import { TypeTable } from "./types";
-import { exact, join, ofType, unknown, Value, withZero } from "./value";
+import { exact, join, ofType, unknown, Value, wild, withZero } from "./value";
 
 export interface EngineStats {
   analyzed: number;
@@ -27,8 +29,18 @@ export interface EngineStats {
 type Mode = "check" | "lazy" | "stores" | "summary";
 
 const LAZY = "(not looked up yet)";
+const LAZY_RESULT: Value = { lo: -Infinity, hi: Infinity, kind: "int", init: "yes", zero: LAZY };
+const LAZY_POINTER: Value = { lo: 0, hi: 1, kind: "ptr", init: "yes", zero: LAZY };
+
+/** Node types collected by the one walk over the file (each descendantsOfType call is a full walk). */
+const INDEXED = [
+  "function_definition", "function_declarator", "type_definition", "declaration", "pointer_expression",
+  "binary_expression", "assignment_expression", "update_expression", "call_expression", "init_declarator",
+  "return_statement", "while_statement", "for_statement", "do_statement", "identifier",
+];
 
 export class FileEngine {
+  private readonly byType = new Map<string, Node[]>();
   readonly types: TypeTable;
   readonly stats: EngineStats = { analyzed: 0, skipped: 0, reasons: new Map() };
   private readonly functions = new Map<string, Node>();
@@ -46,15 +58,29 @@ export class FileEngine {
   private readonly started = Date.now();
   private readonly returns = new Map<string, Value | undefined | "busy">();
   private readonly callerArgs = new Map<string, (Value | undefined)[] | null>();
+  /** Argument values of the calls in one caller (by call node id), from solving the caller. */
+  private readonly callsByCaller = new Map<number, Map<number, readonly Value[]>>();
+  private readonly busyCallers = new Set<number>();
+  readonly decls: Declarations;
 
   constructor(
     readonly root: Node,
     readonly consts?: ConstantLookup,
-    readonly budget: Budget = DEFAULT_BUDGET
+    readonly budget: Budget = DEFAULT_BUDGET,
+    decls?: Declarations,
+    private readonly macroBody: (name: string) => string | undefined = () => undefined
   ) {
-    // One walk over the tree (each descendantsOfType call is a full walk).
-    const nodes = root.descendantsOfType(["function_definition", "function_declarator", "type_definition"]).filter((n): n is Node => n !== null);
+    this.decls = decls ?? Declarations.empty();
+    for (const n of root.descendantsOfType(INDEXED)) {
+      if (n) {
+        const list = this.byType.get(n.type) ?? [];
+        list.push(n);
+        this.byType.set(n.type, list);
+      }
+    }
+    const nodes = [...this.nodes("function_definition"), ...this.nodes("function_declarator"), ...this.nodes("type_definition")];
     this.types = TypeTable.fromDefinitions(nodes.filter((n) => n.type === "type_definition"));
+    this.types.external = this.decls;
     for (const fn of nodes) {
       if (fn.type !== "function_definition") {
         continue;
@@ -91,15 +117,44 @@ export class FileEngine {
 
   /** All function definitions of the file, in source order. */
   functionNodes(): Node[] {
-    this.functionList ??= this.root.descendantsOfType("function_definition").filter((f): f is Node => f !== null && !f.hasError);
+    this.functionList ??= this.nodes("function_definition").filter((f) => !f.hasError);
     return this.functionList;
+  }
+
+  /** All nodes of an indexed type in the file, in source order. */
+  nodes(type: string): readonly Node[] {
+    return this.byType.get(type) ?? [];
+  }
+
+  /** Nodes of the given types inside `scope` (by position), in source order. */
+  within(scope: Node, ...types: string[]): Node[] {
+    const out: Node[] = [];
+    for (const t of types) {
+      const list = this.nodes(t);
+      let lo = 0;
+      let hi = list.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (list[mid].startIndex < scope.startIndex) {
+          lo = mid + 1;
+        } else {
+          hi = mid;
+        }
+      }
+      for (let i = lo; i < list.length && list[i].startIndex < scope.endIndex; i++) {
+        if (list[i].endIndex <= scope.endIndex) {
+          out.push(list[i]);
+        }
+      }
+    }
+    return types.length > 1 ? out.sort((a, b) => a.startIndex - b.startIndex) : out;
   }
 
   private analysis(fn: Node, mode: Mode, onLazy?: () => void): FunctionAnalysis {
     const cfg = this.cfgFor(fn);
     let model = this.models.get(fn.id);
     if (!model) {
-      model = new FunctionModel(fn, this.types);
+      model = new FunctionModel(fn, this.types, this.within(fn, "declaration"), this.within(fn, "pointer_expression"));
       this.models.set(fn.id, model);
     }
     return new FunctionAnalysis(cfg, this.environment(mode, onLazy), this.budget, model);
@@ -117,6 +172,46 @@ export class FileEngine {
   /** Solves `fn` in check mode (parameters = what callers can pass) and replays it to `observer`. */
   analyze(fn: Node, observer: Observer): FunctionAnalysis {
     return withCache(this.syntax, () => this.analyzeNow(fn, observer));
+  }
+
+  /**
+   * Runs checks on one function: `run` replays the analysis with its observer and returns its findings.
+   * First with summaries not looked up yet (cheaper; can only give more findings, never fewer). Only when
+   * that pass used such a value and found something, the function is solved again with the real summaries.
+   */
+  check<T>(fn: Node, run: (fa: FunctionAnalysis) => T[]): { fa: FunctionAnalysis; results: T[] } {
+    return withCache(this.syntax, () => {
+      if (this.budget.fileMillis !== undefined && Date.now() - this.started > this.budget.fileMillis) {
+        return { fa: this.skipped(fn, "file time budget exceeded"), results: [] };
+      }
+      let usedLazy = false;
+      let fa = this.analysis(fn, "lazy", () => (usedLazy = true));
+      let outcome = fa.solve();
+      let results: T[] = outcome.ok ? run(fa) : [];
+      if (outcome.ok && usedLazy && results.length > 0) {
+        fa = this.analysis(fn, "check");
+        outcome = fa.solve();
+        results = outcome.ok ? run(fa) : [];
+      }
+      this.count(fa);
+      return { fa, results };
+    });
+  }
+
+  private skipped(fn: Node, reason: string): FunctionAnalysis {
+    const fa = this.analysis(fn, "check");
+    fa.outcome = { ok: false, reason, visits: 0 };
+    this.count(fa);
+    return fa;
+  }
+
+  private count(fa: FunctionAnalysis): void {
+    if (fa.outcome?.ok) {
+      this.stats.analyzed++;
+    } else if (fa.outcome) {
+      this.stats.skipped++;
+      this.stats.reasons.set(fa.outcome.reason, (this.stats.reasons.get(fa.outcome.reason) ?? 0) + 1);
+    }
   }
 
   /**
@@ -177,6 +272,8 @@ export class FileEngine {
   private environment(mode: Mode, onLazy?: () => void): Environment {
     return {
       types: this.types,
+      decls: this.decls,
+      macroBody: (name) => this.macroBody(name),
       consts: this.consts,
       isStaticObject: (name) => this.staticObjects.has(name),
       isFunction: (name) => this.functions.has(name) || this.declaredFunctions.has(name),
@@ -187,17 +284,32 @@ export class FileEngine {
         }
         return mode === "stores" ? undefined : this.globalRead(path);
       },
+      // Lazy: a same-file call gives "any value, bounds backed, 0 / NULL possible": a superset of every
+      // finding the real summary could give, so the cheap pass never misses one.
       callResult: (name) => {
+        if (mode === "stores") {
+          return undefined;
+        }
         if (mode === "lazy") {
           if (!this.functions.has(name)) {
             return undefined;
           }
           onLazy?.();
-          return withZero(unknown(), LAZY);
+          return this.decls.scalarOf(this.decls.returnType(name))?.kind === "ptr" ? LAZY_POINTER : LAZY_RESULT;
         }
-        return mode === "stores" ? undefined : this.returnSummary(name);
+        return this.computeReturn(name);
       },
-      paramValue: (fnName, info) => (mode === "summary" ? ofType(info.type) : this.paramValue(fnName, info)),
+      paramValue: (fnName, info) => {
+        if (mode === "summary") {
+          // A return value computed from parameters says nothing about one caller's arguments: unbacked bounds.
+          return wild(ofType(info.type));
+        }
+        if (mode === "lazy" && this.usesCallSites(fnName, info)) {
+          onLazy?.();
+          return this.ownParam(fnName, info);
+        }
+        return this.paramValue(fnName, info);
+      },
     };
   }
 
@@ -241,10 +353,7 @@ export class FileEngine {
     let names = this.writes.get(fn.id);
     if (!names) {
       names = new Set();
-      for (const n of fn.descendantsOfType(["assignment_expression", "update_expression", "pointer_expression", "call_expression", "init_declarator"])) {
-        if (!n) {
-          continue;
-        }
+      for (const n of this.within(fn, "assignment_expression", "update_expression", "pointer_expression", "call_expression", "init_declarator")) {
         const targets: (Node | null)[] = [];
         switch (n.type) {
           case "assignment_expression":
@@ -350,14 +459,76 @@ export class FileEngine {
 
   // ---- parameters ---------------------------------------------------------------------------------
 
+  private ownParam(fnName: string, info: VarInfo): Value {
+    return info.type.kind === "ptr" ? unknown("ptr") : ofType(info.type, `parameter '${info.name}' of ${fnName}()`);
+  }
+
+  private usesCallSites(fnName: string, info: VarInfo): boolean {
+    return info.type.kind !== "ptr" && this.staticFunctions.has(fnName) && this.constantArgs(fnName) !== null;
+  }
+
+  /**
+   * A parameter's start value. For a static function used only in direct calls: the join of the argument
+   * values over all calls (constants directly, others by solving the caller). Otherwise, or when some
+   * argument is unknown: any value of the type, with "the caller can pass 0" as zero witness.
+   */
   private paramValue(fnName: string, info: VarInfo): Value {
-    const own = info.type.kind === "ptr" ? unknown("ptr") : ofType(info.type, `parameter '${info.name}' of ${fnName}()`);
-    if (info.type.kind === "ptr" || !this.staticFunctions.has(fnName)) {
+    const own = this.ownParam(fnName, info);
+    if (!this.usesCallSites(fnName, info)) {
       return own;
     }
-    const args = this.constantArgs(fnName);
-    const v = args?.[info.index];
-    return v ?? own;
+    const constant = this.constantArgs(fnName)?.[info.index];
+    if (constant) {
+      return constant;
+    }
+    let result: Value | undefined;
+    for (const call of this.callsTo(fnName)) {
+      const v = this.argumentAt(call, info.index);
+      if (!v || v.wl || v.wh) {
+        return own;
+      }
+      const caller = enclosingFunctionName(call);
+      const named = v.zero !== undefined ? withZero(v, isExactZero(v) ? `${caller}() passes 0` : `${caller}() can pass 0 (${v.zero})`) : v;
+      result = result ? join(result, named) : named;
+    }
+    return result ? { ...result, init: "yes" } : own;
+  }
+
+  private callsTo(fnName: string): Node[] {
+    this.constantArgs(fnName);
+    return (this.identifiersByName?.get(fnName) ?? []).map((id) => id.parent).filter((p): p is Node => p !== null && p.type === "call_expression");
+  }
+
+  /** The value of argument `index` at a call, from solving the calling function (once per caller). */
+  private argumentAt(call: Node, index: number): Value | undefined {
+    let fn: Node | null = call.parent;
+    while (fn && fn.type !== "function_definition") {
+      fn = fn.parent;
+    }
+    if (!fn || fn.hasError || this.busyCallers.has(fn.id)) {
+      return undefined;
+    }
+    let calls = this.callsByCaller.get(fn.id);
+    if (!calls) {
+      calls = new Map();
+      this.callsByCaller.set(fn.id, calls);
+      this.busyCallers.add(fn.id);
+      try {
+        const fa = this.analysis(fn, "stores");
+        if (fa.solve().ok) {
+          const seen = calls;
+          fa.replay({
+            call: (at, _name, args) => {
+              const old = seen.get(at.id);
+              seen.set(at.id, old ? old.map((v, i) => (args[i] ? join(v, args[i]) : v)) : args);
+            },
+          });
+        }
+      } finally {
+        this.busyCallers.delete(fn.id);
+      }
+    }
+    return calls.get(call.id)?.[index];
   }
 
   /**
@@ -374,8 +545,8 @@ export class FileEngine {
     let calls = 0;
     if (!this.identifiersByName) {
       this.identifiersByName = new Map();
-      for (const id of this.root.descendantsOfType("identifier")) {
-        if (id) {
+      for (const id of this.nodes("identifier")) {
+        {
           const list = this.identifiersByName.get(id.text) ?? [];
           list.push(id);
           this.identifiersByName.set(id.text, list);
@@ -418,6 +589,10 @@ export class FileEngine {
     this.callerArgs.set(fnName, result);
     return result;
   }
+}
+
+function isExactZero(v: Value): boolean {
+  return v.lo === 0 && v.hi === 0;
 }
 
 function best(list: string[] | undefined): string | undefined {

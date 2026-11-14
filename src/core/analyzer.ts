@@ -4,11 +4,12 @@
 // -> justifications (comments in the code, deviations in .sca.json). Results are cached by file content.
 
 import { createHash } from "crypto";
+import { DeclData, Declarations, extractDeclarations } from "./engine/declarations";
 import { describeFunctionAt } from "./engine/debug";
 import { justificationFor, findJustifications } from "./justify";
 import { compareFindings, Finding } from "./finding";
 import { ParsedSource, SourceParser } from "./parser/parser";
-import { MacroTable, preprocess, PreprocessEnv } from "./preprocess/preprocessor";
+import { MacroTable, preprocess, PreprocessEnv, PreprocessResult } from "./preprocess/preprocessor";
 import { isRuleEnabled, rulePatternMatches } from "./project/config";
 import { FileContext } from "./project/project";
 
@@ -21,6 +22,8 @@ export interface SourceContext {
   readonly parsed?: ParsedSource;
   /** Macros known at the end of the file (from the file, its headers and the build flags). */
   readonly macros?: MacroTable;
+  /** Typedefs, structs, enums, globals and prototypes from the included headers and the file. */
+  readonly declarations?: Declarations;
 }
 
 /** A check returns findings for the file it is given. */
@@ -33,6 +36,8 @@ const CACHE_LIMIT = 10000;
 
 export class Analyzer {
   private readonly cache = new Map<string, Finding[]>();
+  /** Declarations of headers, by path; reused while the header text is unchanged. */
+  private readonly headerDecls = new Map<string, { text: string; data: DeclData }>();
   private hits = 0;
   private misses = 0;
 
@@ -87,10 +92,41 @@ export class Analyzer {
       return undefined;
     }
     try {
-      return describeFunctionAt({ file, text, parsed, macros: pre.macros }, line);
+      return describeFunctionAt({ file, text, parsed, macros: pre.macros, declarations: this.declarationsFor(pre, parsed.root) }, line);
     } finally {
       parsed.dispose();
     }
+  }
+
+  /** Headers first (in include order), then the file itself, so the file's own declarations win. */
+  private declarationsFor(pre: PreprocessResult, root: import("web-tree-sitter").Node): Declarations {
+    const parts: DeclData[] = [];
+    for (const h of pre.headers) {
+      parts.push(this.headerDeclarations(h.file, h.text));
+    }
+    parts.push(extractDeclarations(root));
+    return new Declarations(parts, pre.macros.asLookup());
+  }
+
+  private headerDeclarations(file: string, text: string): DeclData {
+    const known = this.headerDecls.get(file);
+    if (known && known.text === text) {
+      return known.data;
+    }
+    let data: DeclData = { typedefs: new Map(), structs: new Map(), enums: new Map(), vars: new Map(), funcs: new Map() };
+    if (this.parser && text.length <= 400_000) {
+      const tree = this.parser.parse(file, text);
+      try {
+        data = extractDeclarations(tree.root);
+      } finally {
+        tree.dispose();
+      }
+    }
+    if (this.headerDecls.size >= 4000) {
+      this.headerDecls.clear();
+    }
+    this.headerDecls.set(file, { text, data });
+    return data;
   }
 
   private run(file: string, text: string, context?: FileContext): Finding[] {
@@ -98,7 +134,8 @@ export class Analyzer {
     const parsed = this.parser?.parse(file, pre.text);
     let findings: Finding[];
     try {
-      findings = this.checks.flatMap((check) => check({ file, text, parsed, macros: pre.macros }));
+      const declarations = parsed ? this.declarationsFor(pre, parsed.root) : undefined;
+      findings = this.checks.flatMap((check) => check({ file, text, parsed, macros: pre.macros, declarations }));
     } finally {
       parsed?.dispose();
     }

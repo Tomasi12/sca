@@ -12,7 +12,11 @@ export function engineFor(source: SourceContext): FileEngine | undefined {
   }
   let engine = engines.get(source.parsed);
   if (!engine) {
-    engine = new FileEngine(source.parsed.root, source.macros);
+    const macros = source.macros;
+    engine = new FileEngine(source.parsed.root, macros, undefined, source.declarations, (name) => {
+      const m = macros?.get(name);
+      return m && !m.params ? m.body : undefined;
+    });
     engines.set(source.parsed, engine);
   }
   return engine;

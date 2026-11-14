@@ -9,6 +9,8 @@
 import { Node } from "web-tree-sitter";
 import { ConstantLookup, numericValue } from "../checks/syntax";
 import { Assume, Cfg, Item } from "./cfg";
+import { applyDeclarator, CType, Declarations, specifierType } from "./declarations";
+import { Typing, widthOf } from "./typing";
 import { field, fieldOpt, named, text } from "./syntaxCache";
 import { FLOAT, INT, POINTER, ScalarType, TypeTable, UNKNOWN_INT } from "./types";
 import {
@@ -23,7 +25,9 @@ import {
   join,
   ofType,
   range,
+  reshape,
   unknown,
+  wild,
   Value,
   widen,
   withZero,
@@ -39,6 +43,9 @@ export interface VarInfo {
 /** What the function can see beyond its own variables. */
 export interface Environment {
   readonly types: TypeTable;
+  readonly decls: Declarations;
+  /** Body of an object-like macro (for register macros like `ADC1`). */
+  macroBody(name: string): string | undefined;
   readonly consts?: ConstantLookup;
   /** Value of a read from a file-level static object (`g`, `tab[i].f`), or undefined for "unknown". */
   globalRead(path: string): Value | undefined;
@@ -57,6 +64,22 @@ export interface Observer {
   read?(at: Node, info: VarInfo, value: Value): void;
   store?(path: string, value: Value, at: Node): void;
   ret?(value: Value | undefined, at: Node): void;
+  /** Signed integer arithmetic (`+ - *`, unary minus) before conversion, with the C type of the result. */
+  arith?(at: Node, value: Value, type: ScalarType): void;
+  /** An explicit cast (also `(T)(x)` read as a call) of a value of type `from` (if known) to `to`. */
+  cast?(at: Node, value: Value, from: ScalarType | undefined, to: ScalarType): void;
+  /** A shift by `amount`; `width` is the bit width of the (promoted) left operand. */
+  shift?(at: Node, amount: Value, width: number): void;
+  /** An array access `a[i]`: the index, the array length if known, and whether the index has an unsigned type. */
+  index?(at: Node, index: Value, length: number | undefined, unsignedIndex: boolean): void;
+  /** A memory block copy or fill (memcpy, memset, ...) that ends at `end` (exclusive) in an object of `length` bytes. */
+  extent?(at: Node, end: Value, length: number, what: string): void;
+  /** `x++`, `x--`, `x += k`, ... on a tracked variable: the value before and the result before conversion. */
+  update?(at: Node, info: VarInfo, before: Value, result: Value): void;
+  /** An if / loop condition edge: whether this outcome of the condition can happen at all. */
+  branch?(cond: Node, truth: boolean, feasible: boolean): void;
+  /** A direct call with the argument values. */
+  call?(at: Node, name: string, args: readonly Value[]): void;
 }
 
 export interface Budget {
@@ -69,6 +92,31 @@ export interface Budget {
 }
 
 export const DEFAULT_BUDGET: Budget = { maxVisits: 4000, maxMillis: 60, fileMillis: 1500 };
+
+/** Prefix of pseudo variables for sums of two variables (`addr + len`), learned from conditions. */
+export const SUM = "+:";
+
+export function sumKey(a: string, b: string): string {
+  return a < b ? SUM + a + ":" + b : SUM + b + ":" + a;
+}
+
+/** Fact "x >= e" for a non-constant expression e (`if (v >= res + bit) v -= res + bit;` stays >= 0). */
+export function geKey(x: string, exprText: string): string {
+  return SUM + ">=" + x + ":" + exprText.replace(/[\s()]/g, "");
+}
+
+/** Forgets the facts a variable takes part in (it was assigned). */
+function dropSums(st: State, name: string): void {
+  let word: RegExp | undefined;
+  for (const k of st.vars.keys()) {
+    if (k.startsWith(SUM)) {
+      word ??= new RegExp("(^|[^A-Za-z0-9_])" + name + "([^A-Za-z0-9_]|$)");
+      if (word.test(k.slice(SUM.length))) {
+        st.vars.delete(k);
+      }
+    }
+  }
+}
 
 /** Abstract state: one value per tracked variable, or dead (this point cannot be reached). */
 export class State {
@@ -97,7 +145,11 @@ export class State {
     const out = new State();
     a.vars.forEach((v, k) => {
       const w = b.vars.get(k);
-      out.vars.set(k, w ? join(v, w) : v);
+      if (w) {
+        out.vars.set(k, join(v, w));
+      } else if (!k.startsWith(SUM)) {
+        out.vars.set(k, v);
+      }
     });
     return out;
   }
@@ -122,10 +174,16 @@ export class FunctionModel {
   /** Every name declared in the function (tracked or not): these hide file-level objects. */
   readonly locals = new Set<string>();
   readonly returnType: ScalarType | undefined;
+  /** Declared C types of parameters and locals (arrays and structs included). */
+  readonly declTypes = new Map<string, CType>();
+  /** Locals with automatic storage (not static, not extern, not parameters): their address dies with the call. */
+  readonly autoLocals = new Set<string>();
 
   constructor(
     readonly fn: Node,
-    types: TypeTable
+    types: TypeTable,
+    declarations?: readonly Node[],
+    pointerExpressions?: readonly Node[]
   ) {
     const seen = new Map<string, number>();
     const candidates: VarInfo[] = [];
@@ -152,6 +210,12 @@ export class FunctionModel {
       const d = p.childForFieldName("declarator");
       const spec = p.childForFieldName("type");
       const found = d ? declaredScalar(d, spec ? types.ofSpecifier(spec) : undefined) : undefined;
+      if (d) {
+        const ct = applyDeclarator(d, specifierType(spec, undefined, p));
+        if (ct.name) {
+          this.declTypes.set(ct.name, ct.type);
+        }
+      }
       if (found) {
         seen.set(found.name, (seen.get(found.name) ?? 0) + 1);
         if (found.type) {
@@ -162,7 +226,7 @@ export class FunctionModel {
     }
     const body = fn.childForFieldName("body");
     if (body) {
-      for (const decl of body.descendantsOfType("declaration")) {
+      for (const decl of declarations ?? body.descendantsOfType("declaration")) {
         if (!decl) {
           continue;
         }
@@ -175,6 +239,15 @@ export class FunctionModel {
           if (!found) {
             continue;
           }
+          if (d) {
+            const ct = applyDeclarator(d, specifierType(spec, undefined, decl));
+            if (ct.name) {
+              this.declTypes.set(ct.name, ct.type);
+            }
+          }
+          if (!storage) {
+            this.autoLocals.add(found.name);
+          }
           seen.set(found.name, (seen.get(found.name) ?? 0) + (storage ? 2 : 1));
           if (found.type && !storage) {
             candidates.push({ name: found.name, type: found.type, param: false, index: -1 });
@@ -182,7 +255,7 @@ export class FunctionModel {
         }
       }
       // Locals whose address is taken can change behind our back: do not track them.
-      for (const amp of body.descendantsOfType("pointer_expression")) {
+      for (const amp of pointerExpressions ?? body.descendantsOfType("pointer_expression")) {
         if (amp?.childForFieldName("operator")?.type === "&") {
           const arg = amp.childForFieldName("argument");
           if (arg?.type === "identifier") {
@@ -191,8 +264,11 @@ export class FunctionModel {
         }
       }
     }
-    for (const name of seen.keys()) {
+    for (const [name, count] of seen) {
       this.locals.add(name);
+      if (count > 1 && count < 99) {
+        this.declTypes.delete(name); // declared twice: which one is meant depends on the scope
+      }
     }
     for (const c of candidates) {
       if (seen.get(c.name) === 1) {
@@ -243,6 +319,7 @@ const NEGATE: Record<Cmp, Cmp> = { "==": "!=", "!=": "==", "<": ">=", "<=": ">",
 export class FunctionAnalysis {
   readonly model: FunctionModel;
   readonly name: string;
+  readonly typing: Typing;
   private inStates: (State | undefined)[] = [];
   private observer: Observer | undefined;
   outcome: Outcome | undefined;
@@ -255,6 +332,7 @@ export class FunctionAnalysis {
   ) {
     this.model = model ?? new FunctionModel(cfg.fn, env.types);
     this.name = cfg.name;
+    this.typing = new Typing({ decls: env.decls, locals: this.model.declTypes, hidden: this.model.locals, macroBody: (n) => env.macroBody(n) });
   }
 
   /** The state at the start of a block after solving (undefined: never reached). */
@@ -270,7 +348,7 @@ export class FunctionAnalysis {
     const start = Date.now();
     const entry = new State();
     for (const info of this.model.tracked.values()) {
-      entry.vars.set(info.name, info.param ? this.env.paramValue(this.name, info) : { ...ofType(info.type), init: "no" });
+      entry.vars.set(info.name, info.param ? this.env.paramValue(this.name, info) : { ...wild(ofType(info.type)), init: "no" });
     }
     const blocks = this.cfg.blocks;
     this.inStates = new Array(blocks.length).fill(undefined);
@@ -398,7 +476,7 @@ export class FunctionAnalysis {
         const name = nameOfDeclarator(d);
         const info = name ? this.model.tracked.get(name) : undefined;
         if (info) {
-          st.vars.set(info.name, { ...ofType(info.type), init: "no" });
+          st.vars.set(info.name, { ...wild(ofType(info.type)), init: "no" });
         }
       }
     }
@@ -447,6 +525,9 @@ export class FunctionAnalysis {
         const v = value ? this.eval(value, st) : unknown();
         const desc = field(node, "type");
         const t = desc ? this.env.types.ofDescriptor(desc) : undefined;
+        if (t && value && !st.dead) {
+          this.observer?.cast?.(node, v, this.typing.scalar(value), t);
+        }
         return t ? convert(v, t) : unknown();
       }
       case "unary_expression":
@@ -474,10 +555,14 @@ export class FunctionAnalysis {
         return this.access(node, st);
       case "pointer_expression":
         return this.pointer(node, st);
-      case "sizeof_expression":
+      case "sizeof_expression": {
+        const size = this.sizeOf(node);
+        return size !== undefined ? exact(size) : range(1, Infinity, "int", undefined, false, true);
+      }
       case "alignof_expression":
+        return range(1, Infinity, "int", undefined, false, true);
       case "offsetof_expression":
-        return node.type === "offsetof_expression" ? range(0, Infinity) : range(1, Infinity);
+        return range(0, Infinity, "int", undefined, false, true);
       case "lambda_expression":
         return unknown("ptr");
       case "comment":
@@ -510,10 +595,55 @@ export class FunctionAnalysis {
     if (k !== undefined) {
       return exact(k, Number.isInteger(k) ? "int" : "float", k === 0 ? `the constant 0 (${name})` : undefined);
     }
-    if (this.env.isStaticObject(name)) {
-      return this.env.globalRead(name) ?? unknown();
+    const e = this.env.decls.enumValue(name);
+    if (e !== undefined) {
+      return exact(e, "int", e === 0 ? `the constant 0 (${name})` : undefined);
     }
-    return unknown();
+    if (this.env.isStaticObject(name)) {
+      return this.typed(node, this.env.globalRead(name) ?? unknown());
+    }
+    return this.typed(node, unknown());
+  }
+
+  /** An unknown value still has its declared type's range (a u8 global is 0..255); the bounds stay unbacked. */
+  private typed(node: Node, v: Value): Value {
+    if (!v.wl || !v.wh || v.kind !== "int") {
+      return v;
+    }
+    const t = this.typing.scalar(node);
+    if (!t || t.kind !== "int" || !Number.isFinite(t.lo) || !Number.isFinite(t.hi)) {
+      return v;
+    }
+    const lo = Math.max(v.lo, t.lo);
+    const hi = Math.min(v.hi, t.hi);
+    return lo <= hi ? withZero({ ...v, lo, hi }, v.zero) : v;
+  }
+
+  /** sizeof of an array of scalars, of a scalar variable or of a scalar type; undefined when unknown. */
+  private sizeOf(node: Node): number | undefined {
+    const desc = field(node, "type");
+    const value = field(node, "value");
+    const t = desc ? this.typing.descriptor(desc) : value ? this.typing.of(value) : undefined;
+    return this.bytes(t, 0);
+  }
+
+  private bytes(t: CType | undefined, depth: number): number | undefined {
+    const d = this.env.decls;
+    const r = d.resolve(t);
+    if (!r || depth > 8) {
+      return undefined;
+    }
+    if (r.k === "array") {
+      const n = d.arrayLength(r);
+      const e = this.bytes(r.of, depth + 1);
+      return n !== undefined && e !== undefined ? n * e : undefined;
+    }
+    const s = d.scalarOf(r);
+    if (!s || s.kind !== "int" || !Number.isFinite(s.hi)) {
+      return undefined;
+    }
+    const w = widthOf(s);
+    return w >= 8 ? w / 8 : undefined;
   }
 
   private unary(node: Node, st: State): Value {
@@ -521,8 +651,11 @@ export class FunctionAnalysis {
     const arg = field(node, "argument");
     const v = arg ? this.eval(arg, st) : unknown();
     switch (op) {
-      case "-":
-        return withZero({ ...v, lo: -v.hi, hi: -v.lo, base: undefined }, v.zero);
+      case "-": {
+        const r = range(-v.hi, -v.lo, v.kind, v.zero, !!v.wh, !!v.wl);
+        this.signedArith(node, r, st);
+        return r;
+      }
       case "+":
         return v;
       case "!":
@@ -569,9 +702,35 @@ export class FunctionAnalysis {
         const p = a.kind === "ptr" ? a : b;
         return op === "-" && a.kind === "ptr" && b.kind === "ptr" ? unknown() : p.lo === 1 ? { ...exact(1, "ptr"), base: p.base } : unknown("ptr");
       }
-      return arith(op as BinaryOp, a, b);
+      if ((op === "<<" || op === ">>") && !st.dead) {
+        this.shiftEvent(node, left, b);
+      }
+      const r = arith(op as BinaryOp, a, b);
+      if (op === "+" || op === "-" || op === "*") {
+        this.signedArith(node, r, st);
+      }
+      return r;
     }
     return unknown();
+  }
+
+  private shiftEvent(node: Node, left: Node, amount: Value): void {
+    const lt = this.typing.scalar(left);
+    const w = lt && lt.kind === "int" ? widthOf(widthOf(lt) < 32 ? INT : lt) : 0;
+    if (w > 0) {
+      this.observer?.shift?.(node, amount, w);
+    }
+  }
+
+  /** Reports signed integer arithmetic to the observer (for overflow), using the expression's C type. */
+  private signedArith(node: Node, r: Value, st: State): void {
+    if (st.dead || !this.observer?.arith || r.kind !== "int") {
+      return;
+    }
+    const t = this.typing.scalar(node);
+    if (t && t.kind === "int" && !t.unsigned && Number.isFinite(t.hi)) {
+      this.observer.arith(node, r, t);
+    }
   }
 
   private assignment(node: Node, st: State): Value {
@@ -591,6 +750,15 @@ export class FunctionAnalysis {
         this.observer?.division?.(node, right, r);
       }
       v = ARITH.has(arithOp) && cur.kind !== "ptr" ? arith(arithOp as BinaryOp, cur, r) : unknown(cur.kind);
+      if (arithOp === "-" && target.kind === "var" && st.vars.has(geKey(target.info.name, text(right)))) {
+        v = clamp(v, 0, Infinity) ?? v; // x >= e held, so x - e >= 0
+      }
+      if ((arithOp === "<<" || arithOp === ">>") && !st.dead) {
+        this.shiftEvent(node, left, r);
+      }
+      if (target.kind === "var" && !st.dead) {
+        this.observer?.update?.(node, target.info, cur, v);
+      }
     }
     return this.write(target, v, node, st);
   }
@@ -605,6 +773,9 @@ export class FunctionAnalysis {
     const target = this.lvalue(arg, st);
     const cur = this.readLvalue(target, arg, st);
     const next = cur.kind === "ptr" ? cur : arith(op, cur, exact(1));
+    if (target.kind === "var" && cur.kind !== "ptr" && !st.dead) {
+      this.observer?.update?.(node, target.info, cur, next);
+    }
     const stored = this.write(target, next, node, st);
     return prefix ? stored : cur;
   }
@@ -638,6 +809,9 @@ export class FunctionAnalysis {
       if (inner?.type === "identifier" && !this.model.locals.has(text(inner)) && !this.env.isStaticObject(text(inner)) && !this.env.isFunction(text(inner))) {
         const v = this.eval(args[0], st);
         const t = this.env.types.ofName(text(inner)) ?? UNKNOWN_INT;
+        if (!st.dead && Number.isFinite(t.hi)) {
+          this.observer?.cast?.(node, v, this.typing.scalar(args[0]), t);
+        }
         return convert(v, t);
       }
     }
@@ -652,6 +826,12 @@ export class FunctionAnalysis {
       return unknown();
     }
     const values = args.map((a) => this.eval(a, st));
+    if (name && !st.dead) {
+      this.observer?.call?.(node, name, values);
+    }
+    if (name && /^(memcpy|memmove|memset|__builtin_memcpy|__builtin_memset)$/.test(name) && args.length >= 3 && !st.dead) {
+      this.blockExtent(node, name, args, values[2], st);
+    }
     if (name && NORETURN.test(name)) {
       st.dead = true;
       return unknown();
@@ -671,8 +851,14 @@ export class FunctionAnalysis {
       }
       return unknown("ptr");
     }
+    if (name && /^(ARRAY_LEN|ARRAY_SIZE|COUNT_OF|COUNTOF|NELEMS|NUM_ELEMS|ELEMENTS|_countof)$/i.test(name) && args.length === 1) {
+      const n = this.env.decls.arrayLength(this.typing.of(args[0]));
+      if (n !== undefined) {
+        return exact(n);
+      }
+    }
     if (name && !this.model.locals.has(name)) {
-      return this.env.callResult(name) ?? unknown();
+      return this.typed(node, this.env.callResult(name) ?? unknown());
     }
     return unknown();
   }
@@ -683,7 +869,7 @@ export class FunctionAnalysis {
     if (st.dead) {
       return unknown();
     }
-    return path ? this.env.globalRead(path) ?? unknown() : unknown();
+    return this.typed(node, path ? this.env.globalRead(path) ?? unknown() : unknown());
   }
 
   private pointer(node: Node, st: State): Value {
@@ -702,7 +888,7 @@ export class FunctionAnalysis {
     }
     const p = this.eval(arg, st);
     this.dereferenced(node, arg, p, st);
-    return p.base ? this.env.globalRead(p.base) ?? unknown() : unknown();
+    return this.typed(node, p.base ? this.env.globalRead(p.base) ?? unknown() : unknown());
   }
 
   /** Reports a dereference and remembers that the pointer was not null (it was used). */
@@ -742,7 +928,10 @@ export class FunctionAnalysis {
       const arg = field(node, "argument");
       const index = field(node, "index") ?? field(node, "indices");
       if (index) {
-        this.eval(index, st);
+        const iv = this.eval(index, st);
+        if (arg && !st.dead) {
+          this.indexed(node, arg, index, iv, st);
+        }
       }
       if (!arg) {
         return undefined;
@@ -811,6 +1000,100 @@ export class FunctionAnalysis {
     return !this.model.locals.has(name) && this.env.isStaticObject(name) ? name : undefined;
   }
 
+  /**
+   * Reports `a[i]` with the array length when the type knows it. After the access the index is taken to be in
+   * bounds (the program went on), so one bad index gives one finding, not one per later use.
+   */
+  private indexed(at: Node, arrayNode: Node, indexNode: Node, iv: Value, st: State): void {
+    const length = this.env.decls.arrayLength(this.typing.of(arrayNode));
+    const it = this.typing.scalar(indexNode);
+    let p = at.parent;
+    while (p?.type === "parenthesized_expression") {
+      p = p.parent;
+    }
+    const addressOnly = p?.type === "pointer_expression" && fieldOpt(p, "operator")?.type === "&";
+    this.observer?.index?.(at, iv, length === undefined ? undefined : addressOnly ? length + 1 : length, !!it && it.kind === "int" && it.unsigned);
+    const name = targetName(indexNode);
+    const info = name ? this.model.tracked.get(name) : undefined;
+    if (info && length !== undefined) {
+      const v = st.vars.get(info.name);
+      const inside = v ? clamp(v, 0, length - 1) : undefined;
+      if (inside) {
+        st.vars.set(info.name, inside);
+      }
+    }
+  }
+
+  /** memcpy / memset / ... : the end of the block in the destination and source, against their lengths. */
+  private blockExtent(at: Node, fn: string, args: readonly Node[], len: Value, st: State): void {
+    const lenName = targetName(args[2]);
+    const regions = fn.includes("memset") ? [args[0]] : [args[0], args[1]];
+    for (const r of regions) {
+      const region = this.region(r, st);
+      if (!region) {
+        continue;
+      }
+      let end = arith("+", region.offset, len);
+      if (region.offsetName && lenName) {
+        const sum = st.vars.get(sumKey(region.offsetName, lenName));
+        if (sum) {
+          end = sum;
+        }
+      }
+      this.observer?.extent?.(at, end, region.length, r === args[0] ? "destination" : "source");
+    }
+  }
+
+  /** `arr` -> (length, offset 0); `&arr[i]` -> (length, offset i). Only byte arrays (the length counts bytes). */
+  private region(node: Node, st: State): { length: number; offset: Value; offsetName?: string } | undefined {
+    let n: Node = node;
+    for (;;) {
+      if (n.type === "cast_expression") {
+        const v = field(n, "value");
+        if (!v) {
+          return undefined;
+        }
+        n = v;
+      } else if (n.type === "parenthesized_expression") {
+        const inner = innerExpression(n);
+        if (!inner || inner === n) {
+          return undefined;
+        }
+        n = inner;
+      } else {
+        break;
+      }
+    }
+    if (n.type === "subscript_expression") {
+      return undefined; // a row of a 2-D array: copies across rows are common; the whole object is bigger
+    }
+    let arr = n;
+    let offset: Value = exact(0);
+    let offsetName: string | undefined;
+    if (n.type === "pointer_expression" && fieldOpt(n, "operator")?.type === "&") {
+      const sub = field(n, "argument");
+      if (sub?.type !== "subscript_expression") {
+        return undefined;
+      }
+      const a = field(sub, "argument");
+      const i = field(sub, "index");
+      if (!a || !i) {
+        return undefined;
+      }
+      arr = a;
+      offsetName = targetName(i);
+      const known = offsetName && this.model.tracked.has(offsetName) ? st.vars.get(offsetName) : undefined;
+      offset = known ?? unknown();
+    }
+    const t = this.typing.of(arr);
+    const length = this.env.decls.arrayLength(t);
+    const el = this.env.decls.scalarOf(this.typing.element(t));
+    if (length === undefined || !el || el.kind !== "int" || widthOf(el) !== 8) {
+      return undefined;
+    }
+    return { length, offset, offsetName };
+  }
+
   // ---- lvalues --------------------------------------------------------------------------------------
 
   private lvalue(node: Node, st: State): { kind: "var"; info: VarInfo } | { kind: "global"; path: string } | { kind: "none" } {
@@ -850,6 +1133,7 @@ export class FunctionAnalysis {
     if (target.kind === "var") {
       const stored = { ...convert(v, target.info.type), init: "yes" as const };
       st.vars.set(target.info.name, stored);
+      dropSums(st, target.info.name);
       return stored;
     }
     if (target.kind === "global") {
@@ -866,10 +1150,30 @@ export class FunctionAnalysis {
       const [x, y] = succ;
       if (x.assume?.kind === "cond" && y.assume?.kind === "cond" && x.assume.node.id === y.assume.node.id && x.assume.truth !== y.assume.truth) {
         const [t, f] = this.assumeBoth(x.assume.node, out);
+        if (this.observer?.branch && !out.dead) {
+          this.observer.branch(x.assume.node, true, !t.dead);
+          this.observer.branch(x.assume.node, false, !f.dead);
+        }
         return x.assume.truth ? [t, f] : [f, t];
       }
     }
-    return succ.map((e) => (e.assume ? this.applyAssume(e.assume, out) : out.copy()));
+    return succ.map((e) => {
+      const st = e.assume ? this.applyAssume(e.assume, out) : out.copy();
+      if (e.assume?.kind === "cond" && !out.dead) {
+        this.observer?.branch?.(e.assume.node, e.assume.truth, !st.dead);
+      }
+      return st;
+    });
+  }
+
+  /** A compile-time integer: literal, macro or enum constant. */
+  private constantOf(node: Node): number | undefined {
+    const k = numericValue(node, this.env.consts);
+    if (k !== undefined) {
+      return k;
+    }
+    const n = innerExpression(node) ?? node;
+    return n.type === "identifier" && !this.model.locals.has(text(n)) ? this.env.decls.enumValue(text(n)) : undefined;
   }
 
   /** [state where cond is true, state where it is false], evaluating simple conditions only once. */
@@ -923,6 +1227,13 @@ export class FunctionAnalysis {
     if (!compare(cmp, a, b)[0]) {
       s.dead = true;
       return;
+    }
+    const x = targetName(left);
+    const y = targetName(right);
+    if (x && this.model.tracked.has(x) && (cmp === ">=" || cmp === ">") && right.type !== "number_literal" && this.constantOf(right) === undefined) {
+      s.vars.set(geKey(x, text(right)), exact(1));
+    } else if (y && this.model.tracked.has(y) && (cmp === "<=" || cmp === "<") && left.type !== "number_literal" && this.constantOf(left) === undefined) {
+      s.vars.set(geKey(y, text(left)), exact(1));
     }
     this.narrow(left, cmp, b, s);
     this.narrow(right, MIRROR[cmp], a, s);
@@ -1004,6 +1315,66 @@ export class FunctionAnalysis {
     if (s.dead) {
       return;
     }
+    let n: Node = node;
+    while (n.type === "parenthesized_expression") {
+      const inner = innerExpression(n);
+      if (!inner || inner.id === n.id) {
+        break;
+      }
+      n = inner;
+    }
+    // `(u32)x < k`: a cast to an unsigned type that is below k means 0 <= x < k for a signed x.
+    if (n.type === "cast_expression") {
+      const value = field(n, "value");
+      const desc = field(n, "type");
+      const t = desc ? this.env.types.ofDescriptor(desc) : undefined;
+      if (value && t && t.kind === "int" && t.unsigned) {
+        if (cmp === "<" || cmp === "<=" || cmp === "==") {
+          this.narrow(value, cmp, other, s);
+          this.narrow(value, ">=", exact(0), s);
+        } else if (cmp === "!=") {
+          this.narrow(value, cmp, other, s);
+        }
+      }
+      return;
+    }
+    if (n.type === "binary_expression") {
+      const op = fieldOpt(n, "operator")?.type;
+      const l = field(n, "left");
+      const r = field(n, "right");
+      if (l && r && (op === "+" || op === "-")) {
+        const k = this.constantOf(r);
+        if (k !== undefined) {
+          // x + k <cmp> v  ->  x <cmp> v - k ;  x - k <cmp> v  ->  x <cmp> v + k
+          this.narrow(l, cmp, arith(op === "+" ? "-" : "+", other, exact(k)), s);
+          return;
+        }
+        const kl = this.constantOf(l);
+        if (kl !== undefined && op === "+") {
+          this.narrow(r, cmp, arith("-", other, exact(kl)), s);
+          return;
+        }
+        const a = targetName(stripCasts(l));
+        const b = targetName(stripCasts(r));
+        if (op === "+" && a && b && this.model.tracked.has(a) && this.model.tracked.has(b) && (cmp === "<" || cmp === "<=")) {
+          // x + y <= K: remember the sum, and bound each side by K minus the other's lower bound.
+          const key = sumKey(a, b);
+          const va = s.vars.get(a)!;
+          const vb = s.vars.get(b)!;
+          const sum = s.vars.get(key) ?? arith("+", va, vb);
+          const hi = cmp === "<" ? other.hi - 1 : other.hi;
+          const next = clamp(sum, -Infinity, hi, false, !!other.wh);
+          if (!next) {
+            s.dead = true;
+            return;
+          }
+          s.vars.set(key, next);
+          this.narrow(l, "<=", arith("-", range(next.lo, next.hi, "int", undefined, !!next.wl, !!next.wh), exact(vb.lo)), s);
+          this.narrow(r, "<=", arith("-", range(next.lo, next.hi, "int", undefined, !!next.wl, !!next.wh), exact(va.lo)), s);
+          return;
+        }
+      }
+    }
     const name = targetName(node);
     const info = name ? this.model.tracked.get(name) : undefined;
     if (!info) {
@@ -1013,26 +1384,30 @@ export class FunctionAnalysis {
     if (!v) {
       return;
     }
+    if ((v.kind === "ptr" || other.kind === "ptr") && cmp !== "==" && cmp !== "!=") {
+      return; // p < end says nothing about null
+    }
     const step = v.kind === "float" || other.kind === "float" ? Number.MIN_VALUE : 1;
     let next: Value | undefined = v;
     switch (cmp) {
       case "<":
-        next = clamp(v, -Infinity, other.hi - step);
+        next = clamp(v, -Infinity, other.hi - step, false, !!other.wh);
+        next = next && other.wh ? { ...next, wh: true } : next;
         break;
       case "<=":
-        next = clamp(v, -Infinity, other.hi);
+        next = clamp(v, -Infinity, other.hi, false, !!other.wh);
+        next = next && other.wh ? { ...next, wh: true } : next;
         break;
       case ">":
-        next = clamp(v, other.lo + step, Infinity);
+        next = clamp(v, other.lo + step, Infinity, !!other.wl, false);
+        next = next && other.wl ? { ...next, wl: true } : next;
         break;
       case ">=":
-        next = clamp(v, other.lo, Infinity);
+        next = clamp(v, other.lo, Infinity, !!other.wl, false);
+        next = next && other.wl ? { ...next, wl: true } : next;
         break;
       case "==":
-        next = clamp(v, other.lo, other.hi);
-        if (next && next.kind === "ptr" && other.kind !== "ptr") {
-          next = { ...next };
-        }
+        next = clamp(v, other.lo, other.hi, !!other.wl, !!other.wh);
         break;
       case "!=":
         if (other.lo === other.hi) {
@@ -1040,9 +1415,9 @@ export class FunctionAnalysis {
           if (v.lo === k && v.hi === k) {
             next = undefined;
           } else if (v.lo === k) {
-            next = { ...v, lo: step === 1 ? k + 1 : k === 0 ? Number.MIN_VALUE : k };
+            next = reshape(v, step === 1 ? k + 1 : k === 0 ? Number.MIN_VALUE : k, v.hi);
           } else if (v.hi === k) {
-            next = { ...v, hi: step === 1 ? k - 1 : k === 0 ? -Number.MIN_VALUE : k };
+            next = reshape(v, v.lo, step === 1 ? k - 1 : k === 0 ? -Number.MIN_VALUE : k);
           }
           if (next && k === 0) {
             next = withZero(next, undefined); // known: not 0
@@ -1082,6 +1457,27 @@ function compare(op: Cmp, a: Value, b: Value): [boolean, boolean] {
 }
 
 /** The tracked variable a condition operand stands for: `x`, `(x)`, `(x = f())`. */
+function stripCasts(node: Node): Node {
+  let n = node;
+  for (;;) {
+    if (n.type === "cast_expression") {
+      const v = field(n, "value");
+      if (!v) {
+        return n;
+      }
+      n = v;
+    } else if (n.type === "parenthesized_expression") {
+      const inner = innerExpression(n);
+      if (!inner || inner.id === n.id) {
+        return n;
+      }
+      n = inner;
+    } else {
+      return n;
+    }
+  }
+}
+
 function targetName(node: Node): string | undefined {
   let n: Node | undefined = node;
   while (n && (n.type === "parenthesized_expression" || n.type === "condition_clause")) {

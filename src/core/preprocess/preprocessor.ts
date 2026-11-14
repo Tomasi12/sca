@@ -99,10 +99,11 @@ export class MacroTable implements MacroLookup {
     if (body === "") {
       return undefined;
     }
-    return evaluateCondition(body, { ...this.lookup(), undefinedIsZero: false }, depth + 1);
+    return evaluateCondition(body, { ...this.asLookup(), undefinedIsZero: false }, depth + 1);
   }
 
-  private lookup(): MacroLookup {
+  /** The table as a lookup for evaluateCondition. */
+  asLookup(): MacroLookup {
     return {
       isDefined: (n) => this.isDefined(n),
       valueOf: (n, d) => this.valueOf(n, d),
@@ -121,6 +122,8 @@ export interface PreprocessResult {
   readonly unknownConditions: number;
   /** Headers that were found and read. */
   readonly includes: readonly string[];
+  /** The included headers' texts, in include order (same files as `includes`). */
+  readonly headers: readonly { readonly file: string; readonly text: string }[];
 }
 
 interface Directive {
@@ -203,7 +206,7 @@ export function preprocess(file: string, text: string, env: PreprocessEnv): Prep
   for (const u of env.undefines ?? []) {
     macros.undefine(u, false);
   }
-  const state = { includes: [] as string[], visiting: new Set<string>(), unknown: 0 };
+  const state = { includes: [] as string[], headers: [] as { file: string; text: string }[], visiting: new Set<string>(), unknown: 0 };
   for (const inc of env.forcedIncludes ?? []) {
     const content = env.readFile(inc);
     if (content !== undefined) {
@@ -217,6 +220,7 @@ export function preprocess(file: string, text: string, env: PreprocessEnv): Prep
     inactiveLines: result.inactive,
     unknownConditions: state.unknown,
     includes: state.includes,
+    headers: state.headers,
   };
 }
 
@@ -225,7 +229,7 @@ function run(
   text: string,
   env: PreprocessEnv,
   macros: MacroTable,
-  state: { includes: string[]; visiting: Set<string>; unknown: number },
+  state: { includes: string[]; headers: { file: string; text: string }[]; visiting: Set<string>; unknown: number },
   depth: number
 ): { text: string; inactive: number } {
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
@@ -370,7 +374,7 @@ function includeHeader(
   rest: string,
   env: PreprocessEnv,
   macros: MacroTable,
-  state: { includes: string[]; visiting: Set<string>; unknown: number },
+  state: { includes: string[]; headers: { file: string; text: string }[]; visiting: Set<string>; unknown: number },
   depth: number
 ): void {
   const m = /^"([^"]+)"|^<([^>]+)>/.exec(rest);
@@ -389,6 +393,7 @@ function includeHeader(
       continue;
     }
     state.includes.push(c);
+    state.headers.push({ file: c, text: content });
     state.visiting.add(key);
     run(c, content, env, macros, state, depth + 1);
     state.visiting.delete(key);

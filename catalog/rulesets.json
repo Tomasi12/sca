@@ -124,7 +124,7 @@
       "backends": ["clang-analyzer", "cppcheck", "sca-native"],
       "iso26262": ["static-analysis", "data-flow-analysis", "control-flow-analysis"],
       "implemented": true,
-      "implementedRules": ["div-zero"],
+      "implementedRules": ["div-zero", "null-deref", "uninit-read", "out-of-bounds", "overflow", "uint-wrap", "invalid-shift", "conversion", "dead-code", "endless-loop", "stack-escape"],
       "reason": "Division by zero, null dereference, uninitialized reads, out-of-bounds, leaks: found on many paths, but not proven absent (unsound by design)."
     },
     {
@@ -169,7 +169,7 @@
       "backends": ["sca-native"],
       "iso26262": ["style-guide", "naming-conventions", "design-principles"],
       "implemented": true,
-      "implementedRules": ["switch-default", "goto"],
+      "implementedRules": ["switch-default", "goto", "switch-fallthrough", "unchecked-return", "invariant-condition"],
       "reason": "Our own rules (naming, style, project conventions). No licensing limits."
     }
   ]

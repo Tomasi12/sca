@@ -86,8 +86,29 @@ Click the **shield icon** in the Activity Bar to open **SCA → Issue Monitor**.
 |---|---|---|
 | `runtime-bugfinder:div-zero` | `/` or `%` (also `/=`, `%=`) by the constant 0, or by a value that is always 0 at that point | definite (error) |
 | `runtime-bugfinder:div-zero` | `/` or `%` by a value that can be 0, when SCA can name where the 0 comes from | possible (warning) |
+| `runtime-bugfinder:null-deref` | `*p`, `p->f`, `p[i]` where `p` can be NULL (set to NULL, or from a function in the file that can return NULL) | definite / possible |
+| `runtime-bugfinder:uninit-read` | a local variable read before it is set on every path (definite) or on some path (possible) | definite / possible |
+| `runtime-bugfinder:out-of-bounds` | `a[i]` with `i` outside the array; an unsigned index below 0 that wraps to a huge value; `memcpy` / `memset` / `memmove` past the end of an array | definite / possible |
+| `runtime-bugfinder:overflow` | signed `+ - *` or unary `-` outside its type; a cast to a narrower signed type that does not fit | definite / possible |
+| `runtime-bugfinder:uint-wrap` | `x++`, `x--`, `x += k`, `x -= k` on an unsigned variable that wraps around | definite / possible |
+| `runtime-bugfinder:invalid-shift` | a shift by a negative amount or by the bit width or more | definite / possible |
+| `runtime-bugfinder:conversion` | a cast of a possibly negative variable to an unsigned type (not in a comparison) | definite / possible |
+| `runtime-bugfinder:dead-code` | an if branch that never runs; code no path reaches (after `return`, `break`, ...) | definite |
+| `runtime-bugfinder:endless-loop` | a loop whose condition is always true; a wait loop with an empty body and no timeout | definite / possible |
+| `runtime-bugfinder:stack-escape` | returning the address of a local variable | definite |
 | `sca-own:switch-default` | `switch` without a `default` clause (a nested switch needs its own) | definite (warning) |
 | `sca-own:goto` | every `goto` statement | definite (warning) |
+| `sca-own:switch-fallthrough` | a case with statements that falls into the next one (no `break`; a `/* fallthrough */` comment marks it as intended) | definite (warning) |
+| `sca-own:unchecked-return` | the result of a function that returns a value is ignored (write `(void)f();` when intended); common library functions are exempt | definite (warning) |
+| `sca-own:invariant-condition` | an if condition that is always true or always false | definite (warning) |
+
+**Evidence first.** Every run-time finding needs a reason SCA can show. For 0 and NULL it is a named source
+(an unchecked parameter, a constant, a memset, a function that can return 0 / NULL). For bounds, overflow, shifts,
+wrap-around and conversions only range bounds that come from the code count: constants, a parameter's type
+(the caller can pass any value), or a check like `i <= 16`. Bounds of values SCA knows nothing about (globals from
+other files, fields behind pointer parameters, results of functions in other files) and bounds that grew in a loop
+never give a finding. That is why SCA reads headers: struct field array sizes, enum values, typedefs, prototypes and
+register macros like `#define ADC1 (&hw_adc1)` come from there.
 
 div-zero runs on the **value engine** (see [How the value engine works](#how-the-value-engine-works)): it follows
 every path through the function and knows the divisor's range at the division. Where a 0 can come from:
@@ -254,7 +275,7 @@ TypeScript is compiled into the `out/` folder. No output means no errors.
 ```bash
 npm run test:unit
 ```
-Fast unit tests — you should see `126 passing`.
+Fast unit tests — you should see `129 passing`.
 ```bash
 npm test
 ```
@@ -311,9 +332,13 @@ npm run benchmark -- ../dummy_project --json bench.json --fail-on-fp
 Categories in the key that no check covers yet are listed at the end. Which rule IDs answer which category is set in
 `CATEGORY_RULES` (`src/core/checks/index.ts`). `--fail-on-fp` returns exit code 1 when there is a false positive (for CI).
 
-Result on car-control today: **9 of 10** expected issues found in the covered categories (`div_zero` 5/6, `switch_default` 1/1,
-`goto` 3/3), **0 false positives**, 0 unmarked findings. The one left (`wheel_speed.c:28`) needs knowledge across files
-(the calibration comes from another module).
+Result on car-control today: **36 of 44** expected issues found in the 18 covered categories (82 %), **0 false positives**,
+0 unmarked findings. Per category: `div_zero` 5/6, `null_deref` 1/2, `uninit_var` 1/1, `uninit_ptr` 1/1, `out_of_bounds` 5/9,
+`overflow` 6/8, `uint_wrap` 1/1, `shift` 2/2, `conversion` 1/1, `dead_code` 2/2, `unreachable_code` 1/1,
+`non_terminating_loop` 1/1, `stack_escape` 1/1, `invariant_condition` 2/2, `switch_default` 1/1, `goto` 3/3, `missing_break` 1/1,
+`unchecked_return` 1/1. Most misses need knowledge across files (a NULL or a 0 coming from another module) or about
+unknown inputs (a length from the bus, an index from a struct field). car-control has 87 expected issues in total; the
+categories without a check yet are listed at the end of the benchmark output.
 
 ## Commands (reference)
 ```bash
@@ -336,8 +361,9 @@ unit and integration tests on Linux and Windows; on Linux also the car-control b
 a 2,000-file speed test, a SARIF report and the `.vsix` package (both kept as build artifacts).
 
 ## Speed
-5,000 files (~436,000 lines, copies of car-control) take about **9.6 s** on a laptop the first time (the value engine adds
-about 3 s); unchanged files come from a cache (**~2 s** for all 5,000). Measure with `npm run perf`.
+5,000 files (~510,000 lines, copies of car-control) take about **20 s** on a laptop the first time, about 4 ms per file
+with all run-time checks on every function (before the run-time checks: about 10 s); unchanged files come from a cache
+(**~2 s** for all 5,000). On save only the saved file is analyzed. Measure with `npm run perf`.
 
 ## Layout
 ```

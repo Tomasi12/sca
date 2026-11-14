@@ -32,7 +32,7 @@ export const UNKNOWN_INT: ScalarType = { kind: "int", lo: -Infinity, hi: Infinit
 export const INT = S32;
 
 /** Standard names and common embedded aliases. `long` is taken as 64 bits (the wider choice is the safe one). */
-const BUILTIN: Record<string, ScalarType> = {
+export const BUILTIN_TYPES: Record<string, ScalarType> = {
   bool: BOOL, _Bool: BOOL, boolean: BOOL,
   char: S8, "signed char": S8, "unsigned char": U8,
   int8_t: S8, s8: S8, i8: S8, sint8: S8, sint8_t: S8, int8: S8, INT8: S8,
@@ -47,8 +47,17 @@ const BUILTIN: Record<string, ScalarType> = {
 };
 
 /** Type names known in one file: the builtins plus the file's own `typedef ... name;`. */
+/** Typedefs known from elsewhere (headers): see declarations.ts. */
+export interface TypedefSource {
+  hasTypedef(name: string): boolean;
+  isAggregate(name: string): boolean;
+  scalarOfName(name: string): ScalarType | undefined;
+}
+
 export class TypeTable {
   private readonly typedefs = new Map<string, ScalarType | "aggregate">();
+  /** Header typedefs, consulted after the file's own. */
+  external?: TypedefSource;
 
   /** Reads the file's typedefs (scalar typedefs get a range; struct/union/array typedefs are "aggregate"). */
   static fromTree(root: Node): TypeTable {
@@ -99,16 +108,22 @@ export class TypeTable {
         return INT;
       case "primitive_type":
       case "sized_type_specifier":
-        return BUILTIN[normalize(node.text)] ?? UNKNOWN_INT;
+        return BUILTIN_TYPES[normalize(node.text)] ?? UNKNOWN_INT;
       case "type_identifier": {
         const own = this.typedefs.get(node.text);
         if (own === "aggregate") {
           return undefined;
         }
-        return own ?? BUILTIN[node.text] ?? UNKNOWN_INT;
+        if (own) {
+          return own;
+        }
+        if (this.external?.hasTypedef(node.text)) {
+          return this.external.isAggregate(node.text) ? undefined : this.external.scalarOfName(node.text);
+        }
+        return BUILTIN_TYPES[node.text] ?? UNKNOWN_INT;
       }
       default:
-        return BUILTIN[normalize(node.text)] ?? UNKNOWN_INT;
+        return BUILTIN_TYPES[normalize(node.text)] ?? UNKNOWN_INT;
     }
   }
 
@@ -118,7 +133,10 @@ export class TypeTable {
     if (own !== undefined) {
       return own === "aggregate" ? undefined : own;
     }
-    return BUILTIN[name];
+    if (this.external?.hasTypedef(name)) {
+      return this.external.isAggregate(name) ? undefined : this.external.scalarOfName(name);
+    }
+    return BUILTIN_TYPES[name];
   }
 
   /** The type of a cast like `(u16)x`: the cast's type descriptor. Pointer casts give POINTER. */
