@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SCA project configuration (.sca.json)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "$comment": { "type": "string" },
+    "ruleSets": {
+      "description": "Turn whole rule sets on (true) or off (false). Everything is on by default.",
+      "type": "object",
+      "additionalProperties": { "type": "boolean" },
+      "examples": [{ "sca-own": true, "runtime-bugfinder": true }]
+    },
+    "rules": {
+      "description": "Single rules: true / false, or an object with enabled and severity. A rule setting wins over its rule set.",
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z0-9][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._-]*$" },
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "boolean" },
+          {
+            "type": "object",
+            "description": "Further keys are rule parameters (e.g. a limit) for rules that have them.",
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "severity": { "enum": ["error", "warning", "info"] }
+            }
+          }
+        ]
+      }
+    },
+    "exclude": {
+      "description": "Glob patterns (relative to this folder) that are never analyzed.",
+      "type": "array",
+      "items": { "type": "string" },
+      "examples": [["**/generated/**"]]
+    },
+    "compileCommands": {
+      "description": "Path of compile_commands.json, relative to this folder. Default: compile_commands.json, build/, out/ or cmake-build-debug/.",
+      "type": "string"
+    },
+    "includePaths": {
+      "description": "Extra include folders (relative to this folder), added after those from the compile database.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "defines": {
+      "description": "Extra macros, like -D on the compiler command line.",
+      "type": "object",
+      "additionalProperties": { "type": ["string", "number", "boolean"] }
+    },
+    "deviations": {
+      "description": "Accepted findings with a reason (shown as justified).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule", "file", "line", "reason"],
+        "properties": {
+          "rule": { "type": "string", "description": "Rule ID, <ruleSet>:* or *" },
+          "file": { "type": "string", "description": "Path relative to this folder" },
+          "line": { "type": "integer", "minimum": 1 },
+          "reason": { "type": "string", "minLength": 1 },
+          "approvedBy": { "type": "string" },
+          "date": { "type": "string" }
+        }
+      }
+    }
+  }
+}

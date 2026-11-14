@@ -5,11 +5,14 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import { Analyzer } from "../core/analyzer";
+import { applyBaseline, BASELINE_FILE, baselineEntries, BaselineEntry, createBaseline } from "../core/baseline";
+import { Finding } from "../core/finding";
 import { IssueStore } from "../core/issueStore";
 import { isSourceFile, SOURCE_GLOB } from "../core/languages";
 import { canonicalPath, MonitorEntry, MonitorSet } from "../core/monitorSet";
 import { AnalysisScheduler } from "../core/scheduler";
 import { MonitorNode } from "./issueMonitor";
+import { ProjectManager } from "./projects";
 
 const STATE_KEY = "sca.monitor";
 /** Upper limit of files taken from one monitored folder, so a huge folder cannot freeze the editor. */
@@ -21,6 +24,7 @@ function analysisConfig() {
   const cfg = vscode.workspace.getConfiguration("sca");
   return {
     runOnSave: cfg.get<boolean>("analysis.runOnSave", true),
+    baseline: cfg.get<boolean>("baseline.enabled", true),
     debounceMs: Math.max(0, cfg.get<number>("analysis.debounceMs", DEFAULT_DEBOUNCE_MS)),
   };
 }
@@ -31,13 +35,16 @@ export class MonitorController implements vscode.Disposable {
   /** Keys of the files the monitor covers right now (folders expanded, excludes applied). */
   private tracked = new Set<string>();
   private readonly analyzedListeners = new Set<(file: string) => void>();
+  /** Last analysis per file before the baseline filter: findings and the text they were found in. */
+  private readonly raw = new Map<string, { findings: Finding[]; text: string }>();
   private readonly disposables: vscode.Disposable[] = [];
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly store: IssueStore,
     private readonly analyzer: Analyzer,
-    private readonly output: vscode.OutputChannel
+    private readonly output: vscode.OutputChannel,
+    readonly projects: ProjectManager
   ) {
     this.monitor = MonitorSet.fromJSON(context.workspaceState.get(STATE_KEY));
     const off = this.monitor.onDidChange(() => {
@@ -59,9 +66,13 @@ export class MonitorController implements vscode.Disposable {
       vscode.workspace.onDidCreateFiles((e) => this.onFilesChanged(e.files)),
       vscode.workspace.onDidDeleteFiles((e) => this.onFilesChanged(e.files)),
       vscode.workspace.onDidRenameFiles((e) => this.onFilesChanged(e.files.flatMap((r) => [r.oldUri, r.newUri]))),
+      { dispose: projects.onDidChange((root) => void this.projectChanged(root)) },
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration("sca.analysis.debounceMs")) {
           this.scheduler.delayMs = analysisConfig().debounceMs;
+        }
+        if (e.affectsConfiguration("sca.baseline.enabled")) {
+          void this.projectChanged(undefined);
         }
         if (e.affectsConfiguration("sca.monitor.exclude")) {
           void this.refresh();
@@ -155,8 +166,64 @@ export class MonitorController implements vscode.Disposable {
       if (!this.isTracked(f)) {
         this.scheduler.cancel(f);
         this.store.clearFile(f);
+        this.raw.delete(this.key(f));
       }
     }
+  }
+
+  /** .sca.json, the compile database, the baseline or a header changed: check the affected files again. */
+  private async projectChanged(root: string | undefined): Promise<void> {
+    const files = await this.monitoredFiles();
+    this.applyTracked(files);
+    const inRoot = (f: string) => root === undefined || this.key(f).startsWith(this.key(root) + path.sep);
+    for (const f of files.filter(inRoot)) {
+      this.scheduler.schedule(f);
+    }
+  }
+
+  /** "SCA: Save Baseline": records all current findings, so from now on only new ones are shown. */
+  async saveBaseline(): Promise<number> {
+    const byRoot = new Map<string, BaselineEntry[]>();
+    for (const file of this.store.files()) {
+      const project = this.projects.projectFor(file);
+      const raw = this.raw.get(this.key(file));
+      if (!project || !raw) {
+        continue;
+      }
+      const list = byRoot.get(project.root) ?? [];
+      list.push(...baselineEntries(raw.findings, raw.text, project.relPath(file)));
+      byRoot.set(project.root, list);
+    }
+    let total = 0;
+    for (const [root, entries] of byRoot) {
+      const uri = vscode.Uri.file(path.join(root, BASELINE_FILE));
+      const json = JSON.stringify(createBaseline(entries), null, 2) + "\n";
+      await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(json));
+      this.output.appendLine(`Baseline saved: ${uri.fsPath} (${entries.length} findings)`);
+      total += entries.length;
+    }
+    return total;
+  }
+
+  /** "SCA: Clear Baseline": deletes the baseline files (to the trash), so all findings are shown again. */
+  async clearBaseline(): Promise<number> {
+    let n = 0;
+    for (const project of this.projects.all()) {
+      const uri = vscode.Uri.file(path.join(project.root, BASELINE_FILE));
+      try {
+        await vscode.workspace.fs.stat(uri);
+      } catch {
+        continue; // no baseline in this folder
+      }
+      try {
+        await vscode.workspace.fs.delete(uri, { useTrash: true });
+      } catch {
+        // No trash on this system (e.g. some Linux setups): the baseline can be saved again at any time.
+        await vscode.workspace.fs.delete(uri, { useTrash: false });
+      }
+      n++;
+    }
+    return n;
   }
 
   private async analyzeOne(file: string, signal: AbortSignal): Promise<void> {
@@ -165,11 +232,19 @@ export class MonitorController implements vscode.Disposable {
     if (text === undefined || signal.aborted || !this.isTracked(file)) {
       return;
     }
-    const findings = this.analyzer.analyze(file, text);
+    const project = this.projects.projectFor(file);
+    const findings = this.analyzer.analyze(file, text, project?.contextFor(file));
     if (signal.aborted || !this.isTracked(file)) {
       return;
     }
-    this.store.setFindings(file, findings);
+    this.raw.set(this.key(file), { findings, text });
+    const baseline = project && analysisConfig().baseline ? this.projects.baselineFor(project) : undefined;
+    if (project && baseline) {
+      const { shown, hidden } = applyBaseline(findings, text, project.relPath(file), baseline);
+      this.store.setFindings(file, shown, hidden);
+    } else {
+      this.store.setFindings(file, findings);
+    }
     for (const l of [...this.analyzedListeners]) {
       l(file);
     }
@@ -180,6 +255,10 @@ export class MonitorController implements vscode.Disposable {
       return;
     }
     const file = canonicalPath(doc.uri.fsPath);
+    // A saved header can change macros and #if branches of every file that includes it.
+    if (/.(h|hh|hpp|hxx)$/i.test(file) && this.tracked.size > 0) {
+      this.projects.headerChanged(file);
+    }
     if (this.isTracked(file)) {
       this.scheduler.schedule(file);
     }
@@ -201,7 +280,10 @@ export class MonitorController implements vscode.Disposable {
         }
         continue;
       }
-      const exclude = vscode.workspace.getConfiguration("sca").get<string[]>("monitor.exclude", []);
+      const exclude = [
+        ...vscode.workspace.getConfiguration("sca").get<string[]>("monitor.exclude", []),
+        ...(this.projects.projectFor(e.path)?.config.exclude ?? []),
+      ];
       const uris = await vscode.workspace.findFiles(
         new vscode.RelativePattern(vscode.Uri.file(e.path), SOURCE_GLOB),
         exclude.length > 0 ? `{${exclude.join(",")}}` : undefined,
@@ -305,6 +387,29 @@ export function registerMonitorCommands(controller: MonitorController): vscode.D
         void vscode.window.showInformationMessage("SCA: nothing to analyze. Add files or folders to the monitor first.");
       }
       return n;
+    }),
+    vscode.commands.registerCommand("sca.saveBaseline", async () => {
+      const n = await controller.saveBaseline();
+      void vscode.window.showInformationMessage(
+        n > 0
+          ? `SCA: baseline saved with ${n} finding(s). From now on only new findings are shown.`
+          : "SCA: no open findings, nothing to put in a baseline."
+      );
+      return n;
+    }),
+    // `skipConfirm` is for automation and tests; from the UI the user always confirms.
+    vscode.commands.registerCommand("sca.clearBaseline", async (skipConfirm?: unknown) => {
+      if (skipConfirm !== true) {
+        const ok = await vscode.window.showWarningMessage(
+          `Delete ${BASELINE_FILE}? All findings will be shown again. The file goes to the trash.`,
+          { modal: true },
+          "Delete Baseline"
+        );
+        if (ok !== "Delete Baseline") {
+          return 0;
+        }
+      }
+      return controller.clearBaseline();
     })
   );
 }

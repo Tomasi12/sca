@@ -19,7 +19,8 @@
   ],
   "activationEvents": [
     "onLanguage:c",
-    "onLanguage:cpp"
+    "onLanguage:cpp",
+    "workspaceContains:.sca.json"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -76,6 +77,23 @@
         "title": "Analyze Now",
         "category": "SCA",
         "icon": "$(play)"
+      },
+      {
+        "command": "sca.saveBaseline",
+        "title": "Save Baseline (hide current findings)",
+        "category": "SCA",
+        "icon": "$(history)"
+      },
+      {
+        "command": "sca.clearBaseline",
+        "title": "Clear Baseline (show all findings)",
+        "category": "SCA"
+      },
+      {
+        "command": "sca.exportReport",
+        "title": "Export Report (HTML, CSV, SARIF)",
+        "category": "SCA",
+        "icon": "$(export)"
       }
     ],
     "menus": {
@@ -130,6 +148,21 @@
           "command": "sca.clearMonitor",
           "when": "view == sca.issueMonitor && sca.hasMonitoredEntries",
           "group": "navigation@3"
+        },
+        {
+          "command": "sca.exportReport",
+          "when": "view == sca.issueMonitor && sca.hasMonitoredEntries",
+          "group": "1_report@1"
+        },
+        {
+          "command": "sca.saveBaseline",
+          "when": "view == sca.issueMonitor && sca.hasMonitoredEntries",
+          "group": "2_baseline@1"
+        },
+        {
+          "command": "sca.clearBaseline",
+          "when": "view == sca.issueMonitor && sca.hasMonitoredEntries",
+          "group": "2_baseline@2"
         }
       ],
       "view/item/context": [
@@ -167,9 +200,20 @@
           "default": 300,
           "minimum": 0,
           "description": "Wait time in milliseconds after a save before the analysis starts. A new save within this time restarts the wait."
+        },
+        "sca.baseline.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Hide findings that are listed in the project's .sca-baseline.json (saved with \"SCA: Save Baseline\"). Turn off to see all findings."
         }
       }
-    }
+    },
+    "jsonValidation": [
+      {
+        "fileMatch": ".sca.json",
+        "url": "./schemas/sca.schema.json"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
@@ -180,7 +224,9 @@
     "test": "vscode-test",
     "test:unit": "npm run compile && mocha \"out/test/unit/**/*.test.js\"",
     "package": "vsce package --skip-license --out sca.vsix",
-    "benchmark": "npm run compile && node out/bench/benchmark.js"
+    "benchmark": "npm run compile && node out/bench/benchmark.js",
+    "analyze": "npm run compile && node out/cli/analyze.js",
+    "perf": "npm run compile && node out/bench/perf.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

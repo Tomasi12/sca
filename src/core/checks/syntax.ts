@@ -37,13 +37,24 @@ export function stripParens(node: Node): Node {
   return n;
 }
 
-/** The value of an integer or floating literal (`0`, `0U`, `0x10`, `-1`, `0.0f`), or undefined. */
-export function numericValue(node: Node): number | undefined {
+/** Looks up the integer value of an object-like macro (`#define CELLS 4U`). */
+export interface ConstantLookup {
+  valueOf(name: string): number | undefined;
+}
+
+/**
+ * The value of an integer or floating literal (`0`, `0U`, `0x10`, `-1`, `0.0f`), or of a macro constant
+ * when `consts` is given; otherwise undefined.
+ */
+export function numericValue(node: Node, consts?: ConstantLookup): number | undefined {
   const n = stripParens(node);
+  if (n.type === "identifier" && consts) {
+    return consts.valueOf(n.text);
+  }
   if (n.type === "unary_expression") {
     const op = n.childForFieldName("operator")?.type;
     const arg = n.childForFieldName("argument");
-    const v = arg ? numericValue(arg) : undefined;
+    const v = arg ? numericValue(arg, consts) : undefined;
     if (v === undefined) {
       return undefined;
     }

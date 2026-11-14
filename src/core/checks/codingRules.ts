@@ -9,7 +9,7 @@
 import { Node } from "web-tree-sitter";
 import { SourceContext } from "../analyzer";
 import { createFinding, Finding } from "../finding";
-import { nodeRange, toPosition, walk } from "../parser/parser";
+import { nodeRange, toPosition } from "../parser/parser";
 import { insideError } from "./syntax";
 
 export const SWITCH_DEFAULT_RULE = "sca-own:switch-default";
@@ -20,8 +20,8 @@ export function checkSwitchDefault(source: SourceContext): Finding[] {
     return [];
   }
   const findings: Finding[] = [];
-  for (const node of walk(source.parsed.root)) {
-    if (node.type !== "switch_statement" || insideError(node) || node.hasError) {
+  for (const node of source.parsed.root.descendantsOfType("switch_statement")) {
+    if (!node || insideError(node) || node.hasError) {
       continue;
     }
     const body = node.childForFieldName("body");
@@ -59,8 +59,8 @@ export function checkGoto(source: SourceContext): Finding[] {
     return [];
   }
   const findings: Finding[] = [];
-  for (const node of walk(source.parsed.root)) {
-    if (node.type !== "goto_statement" || insideError(node)) {
+  for (const node of source.parsed.root.descendantsOfType("goto_statement")) {
+    if (!node || insideError(node)) {
       continue;
     }
     const label = node.childForFieldName("label")?.text;

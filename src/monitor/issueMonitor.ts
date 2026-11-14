@@ -53,14 +53,23 @@ export function toDiagnostic(f: Finding): vscode.Diagnostic {
   return d;
 }
 
-function findingIcon(f: Finding): vscode.ThemeIcon {
+/** Same icon as in the Problems panel: it follows the severity. Certainty is shown in the text. */
+export function findingIconId(f: Finding): "pass" | "error" | "warning" | "info" {
   if (f.status === "justified") {
-    return new vscode.ThemeIcon("pass", new vscode.ThemeColor("testing.iconPassed"));
+    return "pass";
   }
-  if (f.certainty === "definite") {
-    return new vscode.ThemeIcon("error", new vscode.ThemeColor("problemsErrorIcon.foreground"));
-  }
-  return new vscode.ThemeIcon("warning", new vscode.ThemeColor("problemsWarningIcon.foreground"));
+  return f.severity;
+}
+
+function findingIcon(f: Finding): vscode.ThemeIcon {
+  const id = findingIconId(f);
+  const color = {
+    pass: "testing.iconPassed",
+    error: "problemsErrorIcon.foreground",
+    warning: "problemsWarningIcon.foreground",
+    info: "problemsInfoIcon.foreground",
+  }[id];
+  return new vscode.ThemeIcon(id, new vscode.ThemeColor(color));
 }
 
 export class IssueMonitorProvider implements vscode.TreeDataProvider<MonitorNode>, vscode.Disposable {
@@ -89,17 +98,19 @@ export class IssueMonitorProvider implements vscode.TreeDataProvider<MonitorNode
         vscode.Uri.file(node.file),
         count > 0 ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None
       );
-      item.description = summaryText(this.store.summary(node.file));
+      const hidden = this.store.hiddenCount(node.file);
+      item.description = summaryText(this.store.summary(node.file)) + (hidden > 0 ? ` · ${hidden} in baseline` : "");
       item.tooltip = node.file;
       item.contextValue = "sca.monitoredFile";
       return item;
     }
     const f = node.finding;
     const item = new vscode.TreeItem(f.message, vscode.TreeItemCollapsibleState.None);
-    item.description = `Ln ${f.range.start.line} · ${f.ruleId}`;
+    const state = f.status === "justified" ? "justified" : f.certainty;
+    item.description = `Ln ${f.range.start.line} · ${state} · ${f.ruleId}`;
     item.iconPath = findingIcon(f);
     item.tooltip = new vscode.MarkdownString(
-      `**${f.ruleId}** — ${f.status === "justified" ? "justified" : f.certainty}\n\n${f.message}` +
+      `**${f.ruleId}** — ${f.status === "justified" ? "justified" : `${f.certainty}, ${f.severity}`}\n\n${f.message}` +
         (f.justification ? `\n\n_Justification:_ ${f.justification}` : "") +
         `\n\n${path.basename(f.file)}:${f.range.start.line}:${f.range.start.column} · ${f.source}`
     );
@@ -129,7 +140,8 @@ export function registerIssueMonitor(store: IssueStore, options: { checkCount: n
 
   const updateHeader = () => {
     const hasFiles = store.files().length > 0;
-    view.description = hasFiles ? summaryText(store.summary()) : undefined;
+    const hidden = store.hiddenCount();
+    view.description = hasFiles ? summaryText(store.summary()) + (hidden > 0 ? ` · ${hidden} in baseline` : "") : undefined;
     view.message =
       hasFiles && options.checkCount === 0
         ? "No checks are active yet. Monitored files are listed, but nothing is checked."

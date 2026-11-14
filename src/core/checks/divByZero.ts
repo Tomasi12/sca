@@ -26,6 +26,7 @@ import {
   enclosingFunction,
   insideError,
   isBlock,
+  ConstantLookup,
   numericValue,
   stripParens,
   stripParensAndCasts,
@@ -37,17 +38,38 @@ export const DIV_ZERO_RULE = "runtime-bugfinder:div-zero";
 const DIVISION_OPERATORS = new Set(["/", "%"]);
 const COMPOUND_DIVISION = new Set(["/=", "%="]);
 
+/**
+ * Macro constants of the file being checked. Set for the duration of one (synchronous) check run,
+ * so the helpers below can resolve `x / CELLS` without passing it through every call.
+ */
+let consts: ConstantLookup | undefined;
+
+const valueOf = (node: Node) => numericValue(node, consts);
+
 export function checkDivByZero(source: SourceContext): Finding[] {
   if (!source.parsed) {
     return [];
   }
+  consts = source.macros;
+  try {
+    return run(source.file, source.parsed.root);
+  } finally {
+    consts = undefined;
+  }
+}
+
+function run(file: string, root: Node): Finding[] {
   const findings: Finding[] = [];
-  for (const node of walk(source.parsed.root)) {
+  // descendantsOfType runs inside tree-sitter (WASM): much faster than visiting every node from JavaScript.
+  for (const node of root.descendantsOfType(["binary_expression", "assignment_expression"])) {
+    if (!node) {
+      continue;
+    }
     const divisor = divisorOf(node);
     if (!divisor || insideError(node)) {
       continue;
     }
-    const finding = judge(source.file, node, divisor);
+    const finding = judge(file, node, divisor);
     if (finding) {
       findings.push(finding);
     }
@@ -71,7 +93,7 @@ function judge(file: string, division: Node, divisorNode: Node): Finding | undef
   const what = op.startsWith("%") ? "Remainder" : "Division";
   const divisor = stripParensAndCasts(divisorNode);
 
-  if (numericValue(divisorNode) === 0) {
+  if (valueOf(divisorNode) === 0) {
     return createFinding({
       ruleId: DIV_ZERO_RULE,
       message: `${what} by zero: the divisor is the constant 0.`,
@@ -129,7 +151,7 @@ function everyCallPassesNonZero(fn: Node, fnName: string, param: string): boolea
       return false; // used as a value (function pointer) or declared again: callers unknown
     }
     const args = call.childForFieldName("arguments")?.namedChildren.filter((a): a is Node => a !== null && a.type !== "comment") ?? [];
-    const value = args[index] ? numericValue(args[index]) : undefined;
+    const value = args[index] ? valueOf(args[index]) : undefined;
     if (value === undefined || value === 0) {
       return false;
     }
@@ -318,9 +340,9 @@ function implies(node: Node, name: string, truth: boolean): boolean {
   }
   let cmp = op as Cmp;
   let k: number | undefined;
-  if (isName(left, name) && (k = numericValue(right)) !== undefined) {
+  if (isName(left, name) && (k = valueOf(right)) !== undefined) {
     // name <cmp> k
-  } else if (isName(right, name) && (k = numericValue(left)) !== undefined) {
+  } else if (isName(right, name) && (k = valueOf(left)) !== undefined) {
     cmp = MIRROR[cmp];
   } else {
     return false;

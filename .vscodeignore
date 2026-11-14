@@ -19,3 +19,5 @@ node_modules/web-tree-sitter/*.d.*
 node_modules/web-tree-sitter/web-tree-sitter.js
 node_modules/web-tree-sitter/web-tree-sitter.wasm
 out/bench/**
+out/cli/**
+.github/**
