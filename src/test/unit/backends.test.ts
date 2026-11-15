@@ -12,6 +12,9 @@ import { ruleInfo } from "../../core/rules/registry";
 
 const FILE = path.resolve("proj", "src", "config_parser.c");
 const SEP = "@@SCA@@";
+/** Paths as cppcheck prints them, relative to the project, with this platform's separator. */
+const REL_SRC = path.join("src", "config_parser.c");
+const REL_INC = path.join("include", "config_parser.h");
 
 function native(line: number, ruleId: string) {
   return createFinding({ ruleId, message: "native", file: FILE, range: { start: { line, column: 5 }, end: { line, column: 9 } }, certainty: "definite" });
@@ -40,11 +43,11 @@ describe("backends (unit)", () => {
 
   it("parses cppcheck output (template lines), keeping only the analyzed file", () => {
     const out = [
-      `src\\config_parser.c${SEP}0${SEP}0${SEP}information${SEP}normalCheckLevelMaxBranches${SEP}Limiting analysis of branches.`,
-      `src\\config_parser.c${SEP}75${SEP}12${SEP}error${SEP}legacyUninitvar${SEP}Uninitialized variable: name`,
-      `src\\config_parser.c${SEP}201${SEP}13${SEP}style${SEP}shadowVariable${SEP}Local variable 'len' shadows outer variable`,
-      `include\\config_parser.h${SEP}9${SEP}9${SEP}style${SEP}unusedStructMember${SEP}struct member is never used.`,
-      `src\\config_parser.c${SEP}3${SEP}0${SEP}information${SEP}missingInclude${SEP}Include file "x.h" not found.`,
+      `${REL_SRC}${SEP}0${SEP}0${SEP}information${SEP}normalCheckLevelMaxBranches${SEP}Limiting analysis of branches.`,
+      `${REL_SRC}${SEP}75${SEP}12${SEP}error${SEP}legacyUninitvar${SEP}Uninitialized variable: name`,
+      `${REL_SRC}${SEP}201${SEP}13${SEP}style${SEP}shadowVariable${SEP}Local variable 'len' shadows outer variable`,
+      `${REL_INC}${SEP}9${SEP}9${SEP}style${SEP}unusedStructMember${SEP}struct member is never used.`,
+      `${REL_SRC}${SEP}3${SEP}0${SEP}information${SEP}missingInclude${SEP}Include file "x.h" not found.`,
       "Checking src/config_parser.c ...",
     ].join("\n");
     const { findings, problems } = parseCppcheck(out, FILE, path.resolve("proj"));
