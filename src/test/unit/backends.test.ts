@@ -203,6 +203,11 @@ describe("backends (unit)", () => {
         return res;
       };
       const run = await runBackend("cppcheck", { enabled: true, args: [], timeoutMs: 20000 }, req, { cwd: dir, run: recording });
+      // An install without its config files cannot analyze anything; SCA reports that as a problem (checked
+      // above with a fake). It says nothing about SCA, so the live test does not count it.
+      if (run.findings.length === 0 && run.problems.some((p) => /installation is broken|Failed to load std\.cfg/i.test(p))) {
+        this.skip();
+      }
       assert.ok(run.findings.some((f) => f.ruleId === "cppcheck:zerodiv" && f.range.start.line === 5), JSON.stringify({ run, raw }));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
