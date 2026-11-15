@@ -2,6 +2,7 @@
 // they are unit-tested on captured output. The tools run as separate processes only (see run.ts); their
 // code is never linked into SCA.
 
+import * as fs from "fs";
 import * as path from "path";
 import { Certainty, createFinding, Finding, Severity } from "../finding";
 import { SourceLanguage } from "../parser/parser";
@@ -65,12 +66,22 @@ export interface ParsedOutput {
   readonly problems: string[];
 }
 
+/**
+ * The real path of an existing file: Windows short (8.3) names like `RUNNER~1` and symlinks resolved, case
+ * folded on Windows. Tools print the long path even when given the short one.
+ */
+export function canonicalFilePath(p: string): string {
+  let r = path.resolve(p);
+  try {
+    r = fs.realpathSync.native(r);
+  } catch {
+    // not on disk (e.g. a path from a test): compare as written
+  }
+  return process.platform === "win32" ? r.toLowerCase() : r;
+}
+
 function samePath(a: string, b: string): boolean {
-  const norm = (p: string) => {
-    const r = path.resolve(p);
-    return process.platform === "win32" ? r.toLowerCase() : r;
-  };
-  return norm(a) === norm(b);
+  return canonicalFilePath(a) === canonicalFilePath(b);
 }
 
 /** Lines written by cppcheck with the template from cppcheckArgs. Only findings in `file` are kept. */

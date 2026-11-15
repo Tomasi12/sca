@@ -44,3 +44,4 @@
 - Fix: `sca-own:switch-fallthrough` read the text between cases at the wrong place after an inactive `#if` block (offsets of the preprocessed text were used on the original text). Regression test added.
 - Checks receive the project config (`SourceContext.config`); the preprocessor reports quoted includes it could not find.
 - car-control: 55 of 63 expected issues in 37 covered categories, 0 false positives (all 27 coding-rule issues found). 2,000 files ~11.5 s cold (~6 ms per file).
+- Fix: backend findings were dropped when the analyzed file was given by a Windows short (8.3) path or a symlink, because the tools print the real path; paths are now compared after resolving them. CI annotates each failing unit test.

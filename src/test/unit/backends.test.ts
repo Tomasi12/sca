@@ -1,5 +1,5 @@
 import * as assert from "assert";
-import { execFileSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -59,6 +59,26 @@ describe("backends (unit)", () => {
       ]
     );
     assert.deepStrictEqual(problems, ['cppcheck missingInclude: Include file "x.h" not found.']);
+  });
+
+  it("matches the analyzed file when it was given by its Windows short (8.3) path", function () {
+    if (process.platform !== "win32") {
+      this.skip();
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sca-long-folder-name-"));
+    const file = path.join(dir, "zero.c");
+    fs.writeFileSync(file, "int x;\n");
+    try {
+      const short = execSync(`for %I in ("${file}") do @echo %~sI`, { encoding: "utf8", shell: "cmd.exe" }).trim();
+      if (short.toLowerCase() === file.toLowerCase()) {
+        this.skip(); // short names are turned off on this drive
+      }
+      // cppcheck is given the short path but prints the long one.
+      const { findings } = parseCppcheck(`${file}${SEP}5${SEP}12${SEP}error${SEP}zerodiv${SEP}Division by zero.`, short, dir);
+      assert.deepStrictEqual(findings.map((f) => [f.ruleId, f.file]), [["cppcheck:zerodiv", short]]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("parses clang-tidy output; notes and excerpts are skipped, compile errors become problems", () => {
