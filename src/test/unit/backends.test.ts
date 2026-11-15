@@ -5,7 +5,7 @@ import * as os from "os";
 import * as path from "path";
 import { EQUIVALENT_RULES, mergeFindings } from "../../core/backends/merge";
 import { clangTidyArgs, cppcheckArgs, parseClangTidy, parseCppcheck, parseVersion } from "../../core/backends/parsers";
-import { checkBackends, enabledBackends, isBackendTarget, runBackend, runBackends, RunProcess } from "../../core/backends/run";
+import { checkBackends, enabledBackends, isBackendTarget, runBackend, runBackends, runProcess, RunProcess } from "../../core/backends/run";
 import { createFinding } from "../../core/finding";
 import { parseConfig } from "../../core/project/config";
 import { ruleInfo } from "../../core/rules/registry";
@@ -148,6 +148,8 @@ describe("backends (unit)", () => {
 
     const missing: RunProcess = async () => ({ stdout: "", stderr: "", failure: "cppcheck was not found." });
     assert.deepStrictEqual((await runBackend("cppcheck", settings, req, { run: missing })).problems, ["cppcheck was not found."]);
+    const broken: RunProcess = async () => ({ stdout: "", stderr: 'cppcheck: error: unrecognized command line option: "--foo".\n', code: 1 });
+    assert.deepStrictEqual((await runBackend("cppcheck", settings, req, { run: broken })).problems, ['cppcheck exited with code 1: cppcheck: error: unrecognized command line option: "--foo".']);
     const cancelled: RunProcess = async () => ({ stdout: "", stderr: "", failure: "cancelled" });
     assert.deepStrictEqual((await runBackend("cppcheck", settings, req, { run: cancelled })).problems, []);
   });
@@ -192,8 +194,16 @@ describe("backends (unit)", () => {
     const file = path.join(dir, "zero.c");
     fs.writeFileSync(file, "int f(void)\n{\n    int a = 10;\n    int b = 0;\n    return a / b;\n}\n");
     try {
-      const run = await runBackend("cppcheck", { enabled: true, args: [], timeoutMs: 20000 }, { file, language: "c", includePaths: [], defines: new Map(), undefines: [] }, { cwd: dir });
-      assert.ok(run.findings.some((f) => f.ruleId === "cppcheck:zerodiv" && f.range.start.line === 5), JSON.stringify(run));
+      const req = { file, language: "c" as const, includePaths: [], defines: new Map(), undefines: [] };
+      let raw: unknown;
+      // Keep what the tool printed, so a failure says why (version, unknown options, path forms).
+      const recording: RunProcess = async (command, args, options) => {
+        const res = await runProcess(command, args, options);
+        raw = { args, ...res, version: execFileSync("cppcheck", ["--version"], { encoding: "utf8" }).trim() };
+        return res;
+      };
+      const run = await runBackend("cppcheck", { enabled: true, args: [], timeoutMs: 20000 }, req, { cwd: dir, run: recording });
+      assert.ok(run.findings.some((f) => f.ruleId === "cppcheck:zerodiv" && f.range.start.line === 5), JSON.stringify({ run, raw }));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

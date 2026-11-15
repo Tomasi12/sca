@@ -13,6 +13,8 @@ export interface ProcessResult {
   readonly stderr: string;
   /** Set when the tool could not run or did not finish. */
   readonly failure?: string;
+  /** Exit code (0 when the tool finished normally). */
+  readonly code?: number;
 }
 
 /** Runs a program; never throws. Non-zero exit codes are normal for these tools (they mean "findings"). */
@@ -34,7 +36,8 @@ export const runProcess: RunProcess = (command, args, options) =>
         } else if (e?.killed) {
           failure = `${command} did not finish within ${options.timeoutMs} ms.`;
         }
-        resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? ""), failure });
+        const code = typeof e?.code === "number" ? e.code : e ? 1 : 0;
+        resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? ""), failure, code });
       }
     );
   });
@@ -83,7 +86,14 @@ export async function runBackend(
   }
   // cppcheck writes its template lines to stderr, clang-tidy its warnings to stdout.
   const parsed = id === "cppcheck" ? parseCppcheck(res.stderr + "\n" + res.stdout, req.file, cwd) : parseClangTidy(res.stdout + "\n" + res.stderr, req.file);
-  return { backend: id, findings: parsed.findings, problems: parsed.problems, ms: Date.now() - started };
+  const problems = [...parsed.problems];
+  // A tool that stopped with an error and printed nothing SCA understands (an unknown option, a broken
+  // install): say what it printed instead of silently reporting no findings.
+  if ((res.code ?? 0) !== 0 && parsed.findings.length === 0 && problems.length === 0) {
+    const text = `${res.stderr}\n${res.stdout}`.trim().split(/\r?\n/).slice(0, 5).join(" | ").slice(0, 400);
+    problems.push(`${command} exited with code ${res.code}${text ? `: ${text}` : " without output"}`);
+  }
+  return { backend: id, findings: parsed.findings, problems, ms: Date.now() - started };
 }
 
 /** Headers are checked through the source files that include them; alone, the tools misjudge them. */
