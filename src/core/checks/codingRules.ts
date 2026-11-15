@@ -10,6 +10,7 @@ import { Node } from "web-tree-sitter";
 import { SourceContext } from "../analyzer";
 import { createFinding, Finding } from "../finding";
 import { nodeRange, toPosition } from "../parser/parser";
+import { originalText } from "./ruleKit";
 import { alwaysExits, insideError } from "./syntax";
 
 export const SWITCH_DEFAULT_RULE = "sca-own:switch-default";
@@ -103,7 +104,7 @@ export function checkSwitchFallthrough(source: SourceContext): Finding[] {
       if (stmts.length === 0 || alwaysExits(stmts[stmts.length - 1]) || endsInExit(stmts[stmts.length - 1])) {
         continue;
       }
-      const between = source.text.slice(stmts[stmts.length - 1].endIndex, cases[i + 1].startIndex);
+      const between = originalText(source, stmts[stmts.length - 1].endPosition, cases[i + 1].startPosition);
       const ownComments = cases[i].namedChildren.filter((c) => c?.type === "comment").map((c) => c?.text ?? "");
       if (/fall|\[\[fallthrough\]\]/i.test(between) || ownComments.some((c) => /fall/i.test(c)) || /fallthrough/.test(stmts[stmts.length - 1].text)) {
         continue;

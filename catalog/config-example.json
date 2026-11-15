@@ -1,5 +1,5 @@
 {
-  "$comment": "Example project config (.sca.json). Turn whole rule sets on/off, override single rules, and record deviations (accepted findings with a reason).",
+  "$comment": "Example project config (.sca.json). Turn whole rule sets on/off, override single rules, set metric limits, turn on external backends, and record deviations (accepted findings with a reason).",
   "ruleSets": {
     "misra-c-2012": true,
     "his-metrics": true,
@@ -8,8 +8,11 @@
   },
   "rules": {
     "misra-c-2012:15.5": false,
-    "his-metrics:cyclomatic-complexity": { "enabled": true, "max": 10 }
+    "his-metrics:returns": false,
+    "sca-own:magic-number": true
   },
+  "metrics": { "cyclomatic": 10, "nesting": 4 },
+  "backends": { "cppcheck": true },
   "deviations": [
     {
       "rule": "misra-c-2012:11.5",

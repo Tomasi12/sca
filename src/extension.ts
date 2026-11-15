@@ -5,10 +5,12 @@ import { IssueStore } from "./core/issueStore";
 import { SUPPORTED_LANGUAGES } from "./core/languages";
 import { MonitorSet } from "./core/monitorSet";
 import { SourceParser } from "./core/parser/parser";
+import { registerCheckBackends } from "./monitor/checkBackends";
 import { registerExportReport } from "./monitor/exportReport";
 import { registerIssueMonitor } from "./monitor/issueMonitor";
 import { MonitorController, registerMonitorCommands } from "./monitor/monitorController";
 import { ProjectManager } from "./monitor/projects";
+import { registerRuleHelp } from "./monitor/ruleHelp";
 import { registerShowCfg } from "./monitor/showCfg";
 import { registerStatusBar } from "./monitor/statusBar";
 
@@ -48,6 +50,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<ScaApi
     registerStatusBar(issueStore, controller.scheduler),
     registerExportReport(issueStore, version),
     registerShowCfg(analyzer, projects),
+    registerRuleHelp(),
+    registerCheckBackends(projects, output),
     vscode.commands.registerCommand("sca.showInfo", () => {
       const message = `SCA is active. Languages: ${SUPPORTED_LANGUAGES.join(", ")}.`;
       vscode.window.showInformationMessage(message);

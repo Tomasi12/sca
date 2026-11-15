@@ -16,6 +16,10 @@ export interface FileContext {
   readonly relPath?: string;
   /** Changes whenever the project setup changes; part of the analysis cache key. */
   readonly version: string;
+  /** Path of compile_commands.json, when the project has one (external backends read it too). */
+  readonly compileDatabase?: string;
+  /** The project root folder. */
+  readonly root?: string;
 }
 
 export type ReadFile = (file: string) => string | undefined;
@@ -124,7 +128,7 @@ export class Project {
       complete: flags !== undefined,
       readFile: (f) => this.header(f),
     };
-    return { env, config: this.config, relPath: this.relPath(file), version: this.version };
+    return { env, config: this.config, relPath: this.relPath(file), version: this.version, compileDatabase: this.dbPath, root: this.root };
   }
 
   private header(file: string): string | undefined {

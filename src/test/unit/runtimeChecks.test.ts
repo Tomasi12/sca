@@ -2,11 +2,15 @@ import * as assert from "assert";
 import * as fs from "fs";
 import * as path from "path";
 import { Analyzer } from "../../core/analyzer";
-import { ALL_CHECKS, CATEGORY_RULES } from "../../core/checks";
+import { CATEGORY_RULES } from "../../core/checks";
+import { checkGoto, checkSwitchDefault, checkSwitchFallthrough, checkUncheckedReturn } from "../../core/checks/codingRules";
+import { checkRuntime } from "../../core/checks/runtime";
 import { SourceParser } from "../../core/parser/parser";
 
 const WASM_DIR = path.join(__dirname, "..", "..", "parsers");
 const SAMPLES = path.join(__dirname, "..", "..", "..", "tests", "samples");
+/** The run-time checks and the first coding rules (the newer rules have their own sample tests). */
+const CHECKS = [checkRuntime, checkSwitchDefault, checkGoto, checkSwitchFallthrough, checkUncheckedReturn];
 const MARKER = /\/\*\s*(DEFECT|RULE|SAFE)\(([a-z_]+)\):/g;
 
 describe("checks/run-time and coding rules (markers)", () => {
@@ -15,7 +19,7 @@ describe("checks/run-time and coding rules (markers)", () => {
 
   before(async () => {
     parser = await SourceParser.create(WASM_DIR);
-    analyzer = new Analyzer(ALL_CHECKS, parser);
+    analyzer = new Analyzer(CHECKS, parser);
   });
 
   after(() => parser.dispose());

@@ -313,4 +313,12 @@ export class Declarations implements TypedefSource {
   hasFunction(name: string): boolean {
     return this.find((d) => d.funcs, name) !== undefined;
   }
+
+  /**
+   * True when a function or object of this name is declared in an included header. The analyzer passes the
+   * headers first and the file itself last; that last part is not searched here.
+   */
+  declaredInHeader(name: string): boolean {
+    return this.parts.slice(1).some((p) => p.funcs.has(name) || p.vars.has(name));
+  }
 }

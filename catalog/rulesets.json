@@ -112,7 +112,8 @@
       "coverage": "full",
       "backends": ["sca-native"],
       "iso26262": ["low-complexity"],
-      "implemented": false,
+      "implemented": true,
+      "implementedRules": ["cyclomatic", "nesting", "statements", "parameters", "returns", "calls", "comment-density"],
       "reason": "Metrics (cyclomatic complexity, nesting, function size, parameters, ...) are straightforward to compute from the AST. Fully achievable by us."
     },
     {
@@ -169,7 +170,7 @@
       "backends": ["sca-native"],
       "iso26262": ["style-guide", "naming-conventions", "design-principles"],
       "implemented": true,
-      "implementedRules": ["switch-default", "goto", "switch-fallthrough", "unchecked-return", "invariant-condition"],
+      "implementedRules": ["float-equality", "assignment-in-condition", "assignment-as-value", "side-effect-in-logical", "increment-in-expression", "comma-operator", "operator-precedence", "sizeof-side-effect", "switch-default", "goto", "switch-fallthrough", "missing-braces", "empty-body", "else-if-without-else", "loop-float-counter", "loop-counter-modified", "switch-too-few-cases", "switch-on-boolean", "invariant-condition", "recursion", "octal-constant", "lowercase-suffix", "unsigned-suffix", "implicit-conversion", "signed-unsigned-compare", "signed-bitwise", "vla", "bitfield-type", "int-division-to-float", "unused-variable", "unused-parameter", "shadowing", "missing-volatile", "internal-linkage", "dynamic-memory", "magic-number", "empty-parameter-list", "unchecked-return"],
       "reason": "Our own rules (naming, style, project conventions). No licensing limits."
     }
   ]

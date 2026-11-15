@@ -1,9 +1,10 @@
 // Headless benchmark: runs every SCA check on a project and compares the findings with its answer key.
 //
-//   npm run benchmark -- <project-folder> [--key <csv>] [--json <file>] [--fail-on-fp]
+//   npm run benchmark -- <project-folder> [--key <csv>] [--json <file>] [--fail-on-fp] [--backends]
 //
 // Defaults: answer key <project>/expected_findings.csv; sources = C/C++ files below <project>,
-// skipping build, out, third_party, node_modules, .git and tools folders.
+// skipping build, out, third_party, node_modules, .git and tools folders. SCA's own checks only, unless
+// --backends also runs the external tools the project's .sca.json turns on.
 // Exit code: 0, or 1 with --fail-on-fp when a SAFE line was reported (for CI), 2 on bad arguments.
 
 import * as fs from "fs";
@@ -18,6 +19,7 @@ interface Args {
   key: string;
   json?: string;
   failOnFp: boolean;
+  backends: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -25,6 +27,7 @@ function parseArgs(argv: string[]): Args {
   let key: string | undefined;
   let json: string | undefined;
   let failOnFp = false;
+  let backends = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--key") {
@@ -33,6 +36,8 @@ function parseArgs(argv: string[]): Args {
       json = argv[++i];
     } else if (a === "--fail-on-fp") {
       failOnFp = true;
+    } else if (a === "--backends") {
+      backends = true;
     } else if (a === "-h" || a === "--help") {
       throw new UsageError("");
     } else if (a.startsWith("-")) {
@@ -47,7 +52,7 @@ function parseArgs(argv: string[]): Args {
     throw new UsageError("Missing project folder.");
   }
   const root = path.resolve(project);
-  return { project: root, key: path.resolve(key ?? path.join(root, "expected_findings.csv")), json, failOnFp };
+  return { project: root, key: path.resolve(key ?? path.join(root, "expected_findings.csv")), json, failOnFp, backends };
 }
 
 class UsageError extends Error {}
@@ -66,7 +71,7 @@ async function main(): Promise<number> {
       if (err.message) {
         console.error(err.message);
       }
-      console.error("Usage: npm run benchmark -- <project-folder> [--key <csv>] [--json <file>] [--fail-on-fp]");
+      console.error("Usage: npm run benchmark -- <project-folder> [--key <csv>] [--json <file>] [--fail-on-fp] [--backends]");
       return 2;
     }
     throw err;
@@ -77,7 +82,7 @@ async function main(): Promise<number> {
   }
 
   // Same setup as the extension: .sca.json, compile database, headers. Justified findings count as reported.
-  const run = await analyzeProject(args.project);
+  const run = await analyzeProject(args.project, { backends: args.backends });
   for (const p of run.project.problems) {
     console.error(`warning: ${p}`);
   }

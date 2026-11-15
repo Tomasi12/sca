@@ -1,14 +1,17 @@
 // Headless analysis of a project folder (no VS Code), e.g. for CI:
 //
-//   npm run analyze -- <project-folder> [--format text|csv|sarif|html] [--out <file>] [--baseline] [--fail-on <definite|possible|any>]
+//   npm run analyze -- <project-folder> [--format text|csv|sarif|html] [--out <file>] [--baseline] [--fail-on <definite|possible|any>] [--no-backends]
 //
-// Uses the project's .sca.json and compile_commands.json like the extension does.
+// Uses the project's .sca.json and compile_commands.json like the extension does, including the external
+// backends it turns on ("backends"); --no-backends runs SCA's own checks only.
 // Exit code: 0; 1 when --fail-on finds matching open findings; 2 on bad arguments.
 
 import * as fs from "fs";
 import * as path from "path";
 import { Analyzer } from "../core/analyzer";
 import { applyBaseline, BASELINE_FILE, parseBaseline } from "../core/baseline";
+import { mergeFindings } from "../core/backends/merge";
+import { enabledBackends, runBackends } from "../core/backends/run";
 import { ALL_CHECKS } from "../core/checks";
 import { Finding } from "../core/finding";
 import { SourceParser } from "../core/parser/parser";
@@ -25,10 +28,12 @@ export interface AnalyzeResult {
   findings: Finding[];
   baselineHidden: number;
   ms: number;
+  /** Problems the external backends reported (tool missing, timeouts, compile errors), once each. */
+  backendProblems: string[];
 }
 
 /** Analyzes every C/C++ file of a project (skipping build folders and the project's excludes). */
-export async function analyzeProject(root: string, options: { baseline?: boolean } = {}): Promise<AnalyzeResult> {
+export async function analyzeProject(root: string, options: { baseline?: boolean; backends?: boolean } = {}): Promise<AnalyzeResult> {
   const project = Project.load(root);
   const parser = await SourceParser.create();
   const analyzer = new Analyzer(ALL_CHECKS, parser);
@@ -36,11 +41,19 @@ export async function analyzeProject(root: string, options: { baseline?: boolean
   const files = sourceFiles(root, project.config.exclude);
   const baseline = options.baseline ? parseBaseline(fs.readFileSync(path.join(root, BASELINE_FILE), "utf8")) : undefined;
   const findings: Finding[] = [];
+  const backendProblems = new Set<string>();
+  const useBackends = options.backends !== false && enabledBackends(project.config).length > 0;
   let baselineHidden = 0;
   try {
     for (const file of files) {
       const text = fs.readFileSync(file, "utf8");
-      let result = analyzer.analyze(file, text, project.contextFor(file));
+      const ctx = project.contextFor(file);
+      let result = analyzer.analyze(file, text, ctx);
+      if (useBackends) {
+        const runs = await runBackends(file, ctx);
+        runs.forEach((r) => r.problems.forEach((p) => backendProblems.add(`${r.backend}: ${p}`)));
+        result = mergeFindings(result, analyzer.applyProject(text, runs.flatMap((r) => r.findings), ctx));
+      }
       if (baseline) {
         const split = applyBaseline(result, text, project.relPath(file), baseline);
         result = split.shown;
@@ -51,7 +64,7 @@ export async function analyzeProject(root: string, options: { baseline?: boolean
   } finally {
     parser.dispose();
   }
-  return { project, files, findings, baselineHidden, ms: Date.now() - started };
+  return { project, files, findings, baselineHidden, ms: Date.now() - started, backendProblems: [...backendProblems] };
 }
 
 function textReport(r: AnalyzeResult): string {
@@ -69,6 +82,7 @@ async function main(argv: string[]): Promise<number> {
   let out: string | undefined;
   let baseline = false;
   let failOn: string | undefined;
+  let backends = true;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--format") {
@@ -79,6 +93,8 @@ async function main(argv: string[]): Promise<number> {
       baseline = true;
     } else if (a === "--fail-on") {
       failOn = argv[++i];
+    } else if (a === "--no-backends") {
+      backends = false;
     } else if (!a.startsWith("-") && !root) {
       root = a;
     } else {
@@ -87,12 +103,12 @@ async function main(argv: string[]): Promise<number> {
     }
   }
   if (!root || !["text", "csv", "sarif", "html"].includes(format) || (failOn && !["definite", "possible", "any"].includes(failOn))) {
-    console.error("Usage: npm run analyze -- <project-folder> [--format text|csv|sarif|html] [--out <file>] [--baseline] [--fail-on definite|possible|any]");
+    console.error("Usage: npm run analyze -- <project-folder> [--format text|csv|sarif|html] [--out <file>] [--baseline] [--fail-on definite|possible|any] [--no-backends]");
     return 2;
   }
   const abs = path.resolve(root);
-  const r = await analyzeProject(abs, { baseline: baseline && fs.existsSync(path.join(abs, BASELINE_FILE)) });
-  for (const p of r.project.problems) {
+  const r = await analyzeProject(abs, { baseline: baseline && fs.existsSync(path.join(abs, BASELINE_FILE)), backends });
+  for (const p of [...r.project.problems, ...r.backendProblems]) {
     console.error(`warning: ${p}`);
   }
   const text =

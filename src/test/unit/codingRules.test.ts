@@ -2,7 +2,7 @@ import * as assert from "assert";
 import * as fs from "fs";
 import * as path from "path";
 import { Analyzer } from "../../core/analyzer";
-import { checkGoto, checkSwitchDefault, GOTO_RULE, SWITCH_DEFAULT_RULE } from "../../core/checks/codingRules";
+import { checkGoto, checkSwitchDefault, checkSwitchFallthrough, GOTO_RULE, SWITCH_DEFAULT_RULE } from "../../core/checks/codingRules";
 import { SourceParser } from "../../core/parser/parser";
 
 const WASM_DIR = path.join(__dirname, "..", "..", "parsers");
@@ -47,6 +47,32 @@ describe("checks/coding rules (unit)", () => {
   it("names the goto label", () => {
     const [f] = analyzer.analyze("t.c", "void f(void) { goto out; out: ; }\n");
     assert.match(f.message, /goto out/);
+  });
+
+  it("reads a fallthrough comment after an inactive #if block (line positions, not offsets)", () => {
+    const fall = new Analyzer([checkSwitchFallthrough], parser);
+    const code = [
+      "#if 0",
+      "int unused_block_with_a_long_line_of_text_to_shift_offsets;",
+      "#endif",
+      "int f(int a)",
+      "{",
+      "    int r = 0;",
+      "    switch (a) {",
+      "    case 1:",
+      "        r = 1;",
+      "        /* fallthrough */",
+      "    case 2:",
+      "        r = 2;",
+      "        break;",
+      "    default:",
+      "        break;",
+      "    }",
+      "    return r;",
+      "}",
+      "",
+    ].join("\n");
+    assert.deepStrictEqual(fall.analyze("t.c", code).map((f) => f.ruleId), []);
   });
 
   it("also works on C++", () => {

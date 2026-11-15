@@ -124,6 +124,8 @@ export interface PreprocessResult {
   readonly includes: readonly string[];
   /** The included headers' texts, in include order (same files as `includes`). */
   readonly headers: readonly { readonly file: string; readonly text: string }[];
+  /** Quoted includes (`#include "x.h"`) that were not found; <angled> system headers are not counted. */
+  readonly missingIncludes: readonly string[];
 }
 
 interface Directive {
@@ -206,7 +208,7 @@ export function preprocess(file: string, text: string, env: PreprocessEnv): Prep
   for (const u of env.undefines ?? []) {
     macros.undefine(u, false);
   }
-  const state = { includes: [] as string[], headers: [] as { file: string; text: string }[], visiting: new Set<string>(), unknown: 0 };
+  const state = { includes: [] as string[], headers: [] as { file: string; text: string }[], visiting: new Set<string>(), unknown: 0, missing: [] as string[] };
   for (const inc of env.forcedIncludes ?? []) {
     const content = env.readFile(inc);
     if (content !== undefined) {
@@ -221,6 +223,7 @@ export function preprocess(file: string, text: string, env: PreprocessEnv): Prep
     unknownConditions: state.unknown,
     includes: state.includes,
     headers: state.headers,
+    missingIncludes: state.missing,
   };
 }
 
@@ -229,7 +232,7 @@ function run(
   text: string,
   env: PreprocessEnv,
   macros: MacroTable,
-  state: { includes: string[]; headers: { file: string; text: string }[]; visiting: Set<string>; unknown: number },
+  state: { includes: string[]; headers: { file: string; text: string }[]; visiting: Set<string>; unknown: number; missing: string[] },
   depth: number
 ): { text: string; inactive: number } {
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
@@ -374,7 +377,7 @@ function includeHeader(
   rest: string,
   env: PreprocessEnv,
   macros: MacroTable,
-  state: { includes: string[]; headers: { file: string; text: string }[]; visiting: Set<string>; unknown: number },
+  state: { includes: string[]; headers: { file: string; text: string }[]; visiting: Set<string>; unknown: number; missing: string[] },
   depth: number
 ): void {
   const m = /^"([^"]+)"|^<([^>]+)>/.exec(rest);
@@ -398,5 +401,8 @@ function includeHeader(
     run(c, content, env, macros, state, depth + 1);
     state.visiting.delete(key);
     return;
+  }
+  if (m[1] !== undefined) {
+    state.missing.push(name);
   }
 }

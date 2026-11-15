@@ -102,6 +102,26 @@ Click the **shield icon** in the Activity Bar to open **SCA → Issue Monitor**.
 | `sca-own:unchecked-return` | the result of a function that returns a value is ignored (write `(void)f();` when intended); common library functions are exempt | definite (warning) |
 | `sca-own:invariant-condition` | an if condition that is always true or always false | definite (warning) |
 
+**Coding rules and metrics.** Besides the rules above, SCA has 33 more coding rules in four groups and 7 code metrics.
+All are definite; coding rules are warnings, metrics are info. The full list, with why each rule exists, how to fix a
+finding and a bad / good example for each, is in the **[rule reference](docs/rules.md)**.
+
+| Group | Rules (`sca-own:...`) |
+|---|---|
+| Expressions | `float-equality`, `assignment-in-condition`, `assignment-as-value`, `side-effect-in-logical`, `increment-in-expression` (off by default), `comma-operator`, `operator-precedence`, `sizeof-side-effect` |
+| Control flow | `missing-braces`, `empty-body`, `else-if-without-else`, `loop-float-counter`, `loop-counter-modified`, `switch-too-few-cases`, `switch-on-boolean`, `recursion` (direct and indirect, through the file's call graph) |
+| Types and literals | `octal-constant`, `lowercase-suffix`, `unsigned-suffix`, `implicit-conversion`, `signed-unsigned-compare`, `signed-bitwise`, `vla`, `bitfield-type`, `int-division-to-float` |
+| Declarations | `unused-variable`, `unused-parameter`, `shadowing`, `missing-volatile` (data shared with an interrupt handler), `internal-linkage`, `dynamic-memory`, `magic-number` (off by default), `empty-parameter-list` |
+| Metrics (`his-metrics:...`) | `cyclomatic` (limit 10), `nesting` (4), `statements` (50), `parameters` (5), `returns` (1), `calls` (7), `comment-density` (at least 0.2) |
+
+Type rules (`implicit-conversion`, `signed-unsigned-compare`, `signed-bitwise`) use the type a value really has
+before C's integer promotion: `u8 + u8` stays `u8` and a constant takes the type of the other operand, so `x + 1U` is
+not a mixed-type expression. `internal-linkage` only runs when every quoted `#include` was found.
+
+**Rule help.** Hover a finding to see what its rule means and how to fix it, with an **Explain rule** link. **SCA:
+Explain Rule** (editor context menu, the **?** next to a finding in the Issue Monitor, or the command palette) opens
+the rule's full page.
+
 **Evidence first.** Every run-time finding needs a reason SCA can show. For 0 and NULL it is a named source
 (an unchecked parameter, a constant, a memset, a function that can return 0 / NULL). For bounds, overflow, shifts,
 wrap-around and conversions only range bounds that come from the code count: constants, a parameter's type
@@ -183,12 +203,33 @@ An optional **`.sca.json`** in the workspace root sets up the project (VS Code c
   "compileCommands": "build/compile_commands.json",
   "includePaths": ["include"],
   "defines": { "UNIT_TEST": "1" },
-  "deviations": [{ "rule": "sca-own:goto", "file": "src/util.c", "line": 74, "reason": "Single cleanup exit." }]
+  "deviations": [{ "rule": "sca-own:goto", "file": "src/util.c", "line": 74, "reason": "Single cleanup exit." }],
+  "metrics": { "cyclomatic": 15, "returns": 3 },
+  "backends": { "cppcheck": true, "clang-tidy": { "args": ["--checks=-*,bugprone-*,clang-analyzer-*"] } }
 }
 ```
 
-Everything is on by default; a single rule wins over its rule set. Changes to `.sca.json`, the compile database or a header
-re-check the monitored files. Problems in the setup are shown in **View → Output → SCA**.
+Everything is on by default except `sca-own:magic-number` and `sca-own:increment-in-expression`, which are on only when
+named in `"rules"` (e.g. `"sca-own:magic-number": true`). A single rule wins over its rule set. `"metrics"` changes the
+limits of the `his-metrics` rules (keys `cyclomatic`, `nesting`, `statements`, `parameters`, `returns`, `calls`,
+`comment-density`). Changes to `.sca.json`, the compile database or a header re-check the monitored files. Problems in
+the setup are shown in **View → Output → SCA**.
+
+#### External backends (optional)
+SCA can also run **cppcheck** and **clang-tidy** on each monitored source file and merge their findings with its own.
+They are off until `"backends"` in `.sca.json` turns them on (`true`, or an object with `path`, `args`, `timeoutMs`).
+Each tool runs as a separate process with the file's include paths and defines (clang-tidy uses the compile database
+when there is one). Headers are checked through the source files that include them.
+
+- SCA's own findings appear first; the merged list follows when the tools are done.
+- When a tool reports the same problem as an SCA rule on the same line (e.g. cppcheck `shadowVariable` and
+  `sca-own:shadowing`), you get **one** finding: SCA's, with the tool named in its source (`sca-native+cppcheck`).
+- Other tool findings keep the tool's ID, e.g. `cppcheck:doubleFree` or `clang-tidy:clang-analyzer-unix.Malloc`. They go
+  through the same rule on/off settings, justifications and deviations as SCA's own.
+- **SCA: Check Backends** shows which tools are installed, their versions, and whether the project uses them. Tool
+  problems (not installed, time-outs, compile errors) are written to **View → Output → SCA** once.
+- `npm run analyze` runs the backends the project turns on (`--no-backends` to skip them); `npm run benchmark` runs
+  SCA's own checks only, unless you add `--backends`.
 
 ### 7. Review: justify, baseline, report
 - **Justify a finding** (reviewed and accepted): a comment on the same line, or on a comment line directly above it —
@@ -332,13 +373,18 @@ npm run benchmark -- ../dummy_project --json bench.json --fail-on-fp
 Categories in the key that no check covers yet are listed at the end. Which rule IDs answer which category is set in
 `CATEGORY_RULES` (`src/core/checks/index.ts`). `--fail-on-fp` returns exit code 1 when there is a false positive (for CI).
 
-Result on car-control today: **36 of 44** expected issues found in the 18 covered categories (82 %), **0 false positives**,
-0 unmarked findings. Per category: `div_zero` 5/6, `null_deref` 1/2, `uninit_var` 1/1, `uninit_ptr` 1/1, `out_of_bounds` 5/9,
-`overflow` 6/8, `uint_wrap` 1/1, `shift` 2/2, `conversion` 1/1, `dead_code` 2/2, `unreachable_code` 1/1,
-`non_terminating_loop` 1/1, `stack_escape` 1/1, `invariant_condition` 2/2, `switch_default` 1/1, `goto` 3/3, `missing_break` 1/1,
-`unchecked_return` 1/1. Most misses need knowledge across files (a NULL or a 0 coming from another module) or about
-unknown inputs (a length from the bus, an index from a struct field). car-control has 87 expected issues in total; the
-categories without a check yet are listed at the end of the benchmark output.
+Result on car-control today: **55 of 63** expected issues found in the 37 covered categories (87 %), **0 false positives**.
+Run-time: `div_zero` 5/6, `null_deref` 1/2, `uninit_var` 1/1, `uninit_ptr` 1/1, `out_of_bounds` 5/9, `overflow` 6/8,
+`uint_wrap` 1/1, `shift` 2/2, `conversion` 1/1, `dead_code` 2/2, `unreachable_code` 1/1, `non_terminating_loop` 1/1,
+`stack_escape` 1/1. Coding rules: all 27 issues in the 24 coding-rule categories found (`switch_default`, `goto` 3/3,
+`missing_break`, `unchecked_return`, `invariant_condition` 2/2, `float_equality`, `assignment_in_condition`,
+`side_effect_in_condition`, `operator_precedence`, `missing_braces`, `empty_body`, `octal_constant`, `implicit_conversion`,
+`signed_unsigned_compare`, `signed_bitwise`, `vla`, `integer_division_in_float`, `unused_variable`, `unused_parameter`,
+`shadowing`, `missing_volatile`, `dynamic_memory`, `magic_number`, `recursion`). The 8 misses are run-time issues that need
+knowledge across files (a NULL or a 0 coming from another module) or about unknown inputs (a length from the bus, an index
+from a struct field). car-control has 87 expected issues in total; the 23 categories without a check yet (24 issues, mostly
+memory and string handling) are listed at the end of the benchmark output. Unmarked findings are mostly metrics and
+magic numbers (car-control turns `sca-own:magic-number` on in its `.sca.json`).
 
 ## Commands (reference)
 ```bash
@@ -349,8 +395,9 @@ npm run lint          # ESLint
 npm run test:unit     # unit tests (seconds, no VS Code)
 npm test              # compile + lint + integration tests in a downloaded VS Code
 npm run package       # build sca.vsix (installable extension file)
-npm run benchmark -- <project>   # run all checks headless and compare with <project>/expected_findings.csv
-npm run analyze -- <project> [--format text|csv|sarif|html] [--out file] [--baseline] [--fail-on definite|possible|any]
+npm run benchmark -- <project> [--backends]   # run all checks headless and compare with <project>/expected_findings.csv
+npm run analyze -- <project> [--format text|csv|sarif|html] [--out file] [--baseline] [--fail-on definite|possible|any] [--no-backends]
+npm run catalog [-- --check]   # regenerate catalog/rules.json, the catalog status and docs/rules.md from the rule registry
 npm run perf -- [files=5000] [template-project] [--max-seconds s]   # speed test
 ```
 See [docs/tech-stack.md](docs/tech-stack.md) for tools and versions.
@@ -361,9 +408,10 @@ unit and integration tests on Linux and Windows; on Linux also the car-control b
 a 2,000-file speed test, a SARIF report and the `.vsix` package (both kept as build artifacts).
 
 ## Speed
-5,000 files (~510,000 lines, copies of car-control) take about **20 s** on a laptop the first time, about 4 ms per file
-with all run-time checks on every function (before the run-time checks: about 10 s); unchanged files come from a cache
-(**~2 s** for all 5,000). On save only the saved file is analyzed. Measure with `npm run perf`.
+2,000 copies of car-control (~204,000 lines) take about **11.5 s** on a laptop the first time, about 6 ms per file with all
+run-time checks, coding rules and metrics (about 4 ms per file with the run-time checks only); unchanged files come from a
+cache (about 0.4 ms per file). On save only the saved file is analyzed. The coding rules and metrics share one index of the
+syntax tree per file. External backends are not part of these numbers. Measure with `npm run perf`.
 
 ## Layout
 ```
@@ -372,7 +420,9 @@ catalog/                  rule catalog (rule sets, ISO 26262 mapping) + coverage
 src/extension.ts          extension entry point (VS Code API)
 src/core/                 pure analyzer logic, no VS Code dependency (Finding model, issue store, scheduler)
 src/core/parser/          C/C++ parser (tree-sitter, WASM) and syntax-tree helpers for checks
-src/core/checks/          native checks (div-zero, coding rules; list + category map in index.ts)
+src/core/checks/          native checks: run-time, coding rules (expressions, control flow, types, declarations), recursion, metrics; list + category map in index.ts
+src/core/rules/           rule registry (descriptions in our own words, examples) and rule help text
+src/core/backends/        optional cppcheck / clang-tidy: command lines, output parsers, process runner, merge
 src/core/engine/          value engine: control-flow graph, value ranges, solver, file summaries, Show CFG text
 src/core/preprocess/      #if evaluation and macro table (small preprocessor for analysis)
 src/core/project/         compile_commands.json, .sca.json, per-project context
@@ -380,13 +430,14 @@ src/core/                 also: justify.ts, baseline.ts, report.ts (CSV / SARIF 
 src/cli/                  headless analysis (npm run analyze)
 schemas/                  JSON schema for .sca.json
 src/bench/                benchmark vs. answer key, speed test (not shipped in the extension)
+src/tools/catalog.ts      generates catalog/rules.json, the catalog status and docs/rules.md (npm run catalog)
 src/monitor/              Issue Monitor view, editor diagnostics, status bar, save trigger (VS Code wiring)
 scripts/copy-wasm.mjs     copies the parser .wasm files to out/parsers during `npm run compile`
 media/                    icons
 src/test/unit/            fast Mocha tests for src/core (no VS Code)
 src/test/integration/     tests inside a real VS Code instance
 tests/samples/            C/C++ inputs with expected findings (also the integration test workspace)
-docs/                     user documentation
+docs/                     user documentation; docs/rules.md is the generated rule reference
 .vscode-test.mjs          integration test config (@vscode/test-cli)
 ```
 

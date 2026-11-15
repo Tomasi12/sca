@@ -1,6 +1,6 @@
 // Runs all checks on one file. Pure logic (no VS Code API), so it also runs headless (benchmark, CLI).
 //
-// Steps: preprocess (#if branches, macros) -> parse -> checks -> project rules (on/off, severity)
+// Steps: preprocess (#if branches, macros) -> parse -> checks -> project rules (on/off incl. rule defaults, severity)
 // -> justifications (comments in the code, deviations in .sca.json). Results are cached by file content.
 
 import { createHash } from "crypto";
@@ -10,7 +10,8 @@ import { justificationFor, findJustifications } from "./justify";
 import { compareFindings, Finding } from "./finding";
 import { ParsedSource, SourceParser } from "./parser/parser";
 import { MacroTable, preprocess, PreprocessEnv, PreprocessResult } from "./preprocess/preprocessor";
-import { isRuleEnabled, rulePatternMatches } from "./project/config";
+import { emptyConfig, isRuleEnabled, rulePatternMatches, ScaConfig } from "./project/config";
+import { isEnabledByDefault } from "./rules/registry";
 import { FileContext } from "./project/project";
 
 /** What a check gets: the file, its text and, when the parser is loaded, its syntax tree. */
@@ -24,6 +25,10 @@ export interface SourceContext {
   readonly macros?: MacroTable;
   /** Typedefs, structs, enums, globals and prototypes from the included headers and the file. */
   readonly declarations?: Declarations;
+  /** The project config (.sca.json), for rule parameters such as metric limits. */
+  readonly config?: ScaConfig;
+  /** Quoted includes that were not found; checks that need every header stay quiet when this is not empty. */
+  readonly missingIncludes?: readonly string[];
 }
 
 /** A check returns findings for the file it is given. */
@@ -135,20 +140,28 @@ export class Analyzer {
     let findings: Finding[];
     try {
       const declarations = parsed ? this.declarationsFor(pre, parsed.root) : undefined;
-      findings = this.checks.flatMap((check) => check({ file, text, parsed, macros: pre.macros, declarations }));
+      const ctx: SourceContext = { file, text, parsed, macros: pre.macros, declarations, config: context?.config, missingIncludes: pre.missingIncludes };
+      findings = this.checks.flatMap((check) => check(ctx));
     } finally {
       parsed?.dispose();
     }
+    return this.applyProject(text, findings, context);
+  }
 
+  /**
+   * The project steps every finding goes through, native or from an external backend: rules on/off (rule
+   * defaults included), severity overrides, justification comments and deviations from .sca.json.
+   */
+  applyProject(text: string, input: readonly Finding[], context?: FileContext): Finding[] {
+    let findings = [...input];
     const config = context?.config;
-    if (config) {
-      findings = findings
-        .filter((f) => isRuleEnabled(config, f.ruleId))
-        .map((f) => {
-          const severity = config.rules[f.ruleId]?.severity;
-          return severity && severity !== f.severity ? { ...f, severity } : f;
-        });
-    }
+    const rules = config ?? emptyConfig();
+    findings = findings
+      .filter((f) => isRuleEnabled(rules, f.ruleId, isEnabledByDefault(f.ruleId)))
+      .map((f) => {
+        const severity = rules.rules[f.ruleId]?.severity;
+        return severity && severity !== f.severity ? { ...f, severity } : f;
+      });
 
     const inCode = text.includes("sca-justify(") ? findJustifications(text) : [];
     const deviations = config && context?.relPath ? config.deviations.filter((d) => d.file === context.relPath) : [];

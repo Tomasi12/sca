@@ -65,6 +65,46 @@
           "date": { "type": "string" }
         }
       }
+    },
+    "metrics": {
+      "description": "Limits for the his-metrics rules. A function is reported when its value is above the limit; a file when its comment density is below it.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cyclomatic": { "type": "number", "minimum": 0, "default": 10, "description": "Decisions + 1 per function." },
+        "nesting": { "type": "number", "minimum": 0, "default": 4, "description": "Deepest nesting of control statements." },
+        "statements": { "type": "number", "minimum": 0, "default": 50, "description": "Statements per function." },
+        "parameters": { "type": "number", "minimum": 0, "default": 5, "description": "Parameters per function." },
+        "returns": { "type": "number", "minimum": 0, "default": 1, "description": "Return points per function." },
+        "calls": { "type": "number", "minimum": 0, "default": 7, "description": "Different functions called per function." },
+        "comment-density": { "type": "number", "minimum": 0, "default": 0.2, "description": "Comment lines per code line, at least." }
+      }
+    },
+    "backends": {
+      "description": "Optional external tools, run as separate processes. Their findings are merged with SCA's own. Off unless listed here.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cppcheck": { "$ref": "#/definitions/backend" },
+        "clang-tidy": { "$ref": "#/definitions/backend" }
+      }
+    }
+  },
+  "definitions": {
+    "backend": {
+      "oneOf": [
+        { "type": "boolean" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "path": { "type": "string", "description": "Executable name or path. Default: found on PATH." },
+            "args": { "type": "array", "items": { "type": "string" }, "description": "Extra command-line arguments." },
+            "timeoutMs": { "type": "number", "minimum": 100, "default": 20000 }
+          }
+        }
+      ]
     }
   }
 }

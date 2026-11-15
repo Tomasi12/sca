@@ -7,7 +7,8 @@
 //   "compileCommands": "build/compile_commands.json",
 //   "includePaths": ["include"],
 //   "defines": { "UNIT_TEST": "1" },
-//   "deviations": [ { "rule": "sca-own:goto", "file": "src/util.c", "line": 74, "reason": "Single exit for cleanup." } ]
+//   "deviations": [ { "rule": "sca-own:goto", "file": "src/util.c", "line": 74, "reason": "Single exit for cleanup." } ],
+//   "metrics": { "cyclomatic": 15, "returns": 3 }
 // }
 //
 // Every key is optional. Unknown keys are reported, not fatal.
@@ -36,16 +37,43 @@ export interface ScaConfig {
   includePaths: string[];
   defines: Record<string, string>;
   deviations: Deviation[];
+  /** Metric limits from "metrics", by metric name (camelCase: commentDensity). */
+  metrics: Record<string, number>;
+  /** External tools from "backends" (only the ones listed; all off by default). */
+  backends: Record<string, BackendSettings>;
 }
+
+export interface BackendSettings {
+  enabled: boolean;
+  /** Executable name or path; default: the tool name, found on PATH. */
+  path?: string;
+  /** Extra command-line arguments. */
+  args: string[];
+  timeoutMs: number;
+}
+
+export const KNOWN_BACKENDS = ["cppcheck", "clang-tidy"] as const;
+export const DEFAULT_BACKEND_TIMEOUT_MS = 20000;
+
+/** `.sca.json` "metrics" keys -> metric names used in code. */
+export const METRIC_KEYS: Readonly<Record<string, string>> = {
+  cyclomatic: "cyclomatic",
+  nesting: "nesting",
+  statements: "statements",
+  parameters: "parameters",
+  returns: "returns",
+  calls: "calls",
+  "comment-density": "commentDensity",
+};
 
 export const CONFIG_FILE = ".sca.json";
 
 export function emptyConfig(): ScaConfig {
-  return { ruleSets: {}, rules: {}, exclude: [], includePaths: [], defines: {}, deviations: [] };
+  return { ruleSets: {}, rules: {}, exclude: [], includePaths: [], defines: {}, deviations: [], metrics: {}, backends: {} };
 }
 
 const SEVERITIES: readonly string[] = ["error", "warning", "info"];
-const KNOWN_KEYS = new Set(["$schema", "$comment", "ruleSets", "rules", "exclude", "compileCommands", "includePaths", "defines", "deviations"]);
+const KNOWN_KEYS = new Set(["$schema", "$comment", "ruleSets", "rules", "exclude", "compileCommands", "includePaths", "defines", "deviations", "metrics", "backends"]);
 
 /** Parses `.sca.json`. Never throws: problems are returned as messages, the rest of the file still counts. */
 export function parseConfig(text: string): { config: ScaConfig; problems: string[] } {
@@ -136,6 +164,49 @@ export function parseConfig(text: string): { config: ScaConfig; problems: string
       problems.push(`"deviations" must be an array.`);
     }
   }
+  if (data.metrics !== undefined) {
+    if (isObject(data.metrics)) {
+      for (const [k, v] of Object.entries(data.metrics)) {
+        const name = METRIC_KEYS[k];
+        if (!name) {
+          problems.push(`metrics: unknown metric "${k}" (known: ${Object.keys(METRIC_KEYS).join(", ")}).`);
+        } else if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+          problems.push(`metrics.${k} must be a number >= 0.`);
+        } else {
+          config.metrics[name] = v;
+        }
+      }
+    } else {
+      problems.push(`"metrics" must be an object.`);
+    }
+  }
+  if (data.backends !== undefined) {
+    if (isObject(data.backends)) {
+      for (const [name, v] of Object.entries(data.backends)) {
+        if (!(KNOWN_BACKENDS as readonly string[]).includes(name)) {
+          problems.push(`backends: unknown tool "${name}" (known: ${KNOWN_BACKENDS.join(", ")}).`);
+          continue;
+        }
+        if (typeof v === "boolean") {
+          config.backends[name] = { enabled: v, args: [], timeoutMs: DEFAULT_BACKEND_TIMEOUT_MS };
+        } else if (isObject(v)) {
+          const args = stringList(v.args, `backends.${name}.args`, problems);
+          const timeout = typeof v.timeoutMs === "number" && v.timeoutMs >= 100 ? v.timeoutMs : DEFAULT_BACKEND_TIMEOUT_MS;
+          if (v.timeoutMs !== undefined && timeout !== v.timeoutMs) {
+            problems.push(`backends.${name}.timeoutMs must be a number >= 100.`);
+          }
+          if (v.path !== undefined && typeof v.path !== "string") {
+            problems.push(`backends.${name}.path must be a string.`);
+          }
+          config.backends[name] = { enabled: v.enabled !== false, path: typeof v.path === "string" ? v.path : undefined, args, timeoutMs: timeout };
+        } else {
+          problems.push(`backends.${name} must be true, false or an object.`);
+        }
+      }
+    } else {
+      problems.push(`"backends" must be an object.`);
+    }
+  }
   return { config, problems };
 }
 
@@ -154,11 +225,17 @@ function stringList(v: unknown, name: string, problems: string[]): string[] {
   return [];
 }
 
-/** Is the rule on? A single-rule setting wins over its rule set; everything is on by default. */
-export function isRuleEnabled(config: ScaConfig, ruleId: string): boolean {
+/**
+ * Is the rule on? A single-rule setting wins over its rule set. Rules are on by default, except rules that are
+ * off by default (e.g. sca-own:magic-number): those are only on when named in "rules".
+ */
+export function isRuleEnabled(config: ScaConfig, ruleId: string, enabledByDefault = true): boolean {
   const rule = config.rules[ruleId];
   if (rule) {
     return rule.enabled;
+  }
+  if (!enabledByDefault) {
+    return false;
   }
   const set = ruleId.split(":")[0];
   return config.ruleSets[set] ?? true;

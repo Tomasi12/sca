@@ -151,13 +151,17 @@ export class FileEngine {
   }
 
   private analysis(fn: Node, mode: Mode, onLazy?: () => void): FunctionAnalysis {
-    const cfg = this.cfgFor(fn);
+    return new FunctionAnalysis(this.cfgFor(fn), this.environment(mode, onLazy), this.budget, this.modelFor(fn));
+  }
+
+  /** Parameters and locals of a function (built once, shared by the engine and the coding-rule checks). */
+  modelFor(fn: Node): FunctionModel {
     let model = this.models.get(fn.id);
     if (!model) {
       model = new FunctionModel(fn, this.types, this.within(fn, "declaration"), this.within(fn, "pointer_expression"));
       this.models.set(fn.id, model);
     }
-    return new FunctionAnalysis(cfg, this.environment(mode, onLazy), this.budget, model);
+    return model;
   }
 
   cfgFor(fn: Node): Cfg {

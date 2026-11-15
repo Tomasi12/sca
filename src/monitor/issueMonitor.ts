@@ -5,6 +5,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { Finding, FindingSummary, Severity } from "../core/finding";
 import { IssueStore } from "../core/issueStore";
+import { ruleInfo } from "../core/rules/registry";
 
 export const ISSUE_MONITOR_VIEW_ID = "sca.issueMonitor";
 
@@ -110,7 +111,7 @@ export class IssueMonitorProvider implements vscode.TreeDataProvider<MonitorNode
     item.description = `Ln ${f.range.start.line} · ${state} · ${f.ruleId}`;
     item.iconPath = findingIcon(f);
     item.tooltip = new vscode.MarkdownString(
-      `**${f.ruleId}** — ${f.status === "justified" ? "justified" : `${f.certainty}, ${f.severity}`}\n\n${f.message}` +
+      `**${ruleInfo(f.ruleId)?.title ?? f.ruleId}** (\`${f.ruleId}\`) — ${f.status === "justified" ? "justified" : `${f.certainty}, ${f.severity}`}\n\n${f.message}` +
         (f.justification ? `\n\n_Justification:_ ${f.justification}` : "") +
         `\n\n${path.basename(f.file)}:${f.range.start.line}:${f.range.start.column} · ${f.source}`
     );

@@ -206,12 +206,12 @@ describe("SCA extension (integration)", () => {
       await vscode.commands.executeCommand("sca.addToMonitor", sample);
       const file = api.issueStore.files().find((f) => path.basename(f) === "div_by_zero.c");
       assert.ok(file, "sample not in the issue store");
-      const findings = api.issueStore.findingsFor(file);
+      const findings = api.issueStore.findingsFor(file).filter((f) => f.ruleId.startsWith("runtime-bugfinder:"));
       assert.deepStrictEqual(
         findings.map((f) => [f.ruleId, f.certainty, f.range.start.line]),
         [["runtime-bugfinder:div-zero", "possible", 6]]
       );
-      const diags = vscode.languages.getDiagnostics(sample).filter((d) => d.source === "SCA");
+      const diags = vscode.languages.getDiagnostics(sample).filter((d) => d.source === "SCA" && d.code === "runtime-bugfinder:div-zero");
       assert.strictEqual(diags.length, 1);
       assert.strictEqual(diags[0].range.start.line, 5);
       await vscode.commands.executeCommand("sca.removeFromMonitor", sample);
@@ -222,7 +222,10 @@ describe("SCA extension (integration)", () => {
       await vscode.commands.executeCommand("sca.addToMonitor", sample);
       const file = api.issueStore.files().find((f) => path.basename(f) === "coding_rules.c")!;
       assert.deepStrictEqual(
-        api.issueStore.findingsFor(file).map((f) => `${f.ruleId}@${f.range.start.line}`),
+        api.issueStore
+          .findingsFor(file)
+          .filter((f) => f.ruleId === "sca-own:switch-default" || f.ruleId === "sca-own:goto")
+          .map((f) => `${f.ruleId}@${f.range.start.line}`),
         ["sca-own:switch-default@9", "sca-own:switch-default@37", "sca-own:goto@53"]
       );
       await vscode.commands.executeCommand("sca.removeFromMonitor", sample);
@@ -246,6 +249,8 @@ describe("SCA extension (integration)", () => {
     let sample: vscode.Uri;
     const rel = (name: string) => vscode.Uri.joinPath(folder, name);
     const sampleFile = () => api.issueStore.files().find((f) => path.basename(f) === "coding_rules.c")!;
+    /** All findings in coding_rules.c with the default rules (coding rules and metrics included). */
+    let total = 0;
 
     /** Waits until the condition holds (the extension reacts to file changes asynchronously). */
     async function until(cond: () => boolean, what: string, ms = 8000): Promise<void> {
@@ -272,7 +277,8 @@ describe("SCA extension (integration)", () => {
       sample = rel("coding_rules.c");
       await vscode.commands.executeCommand("sca.clearMonitor");
       await vscode.commands.executeCommand("sca.addToMonitor", sample);
-      await until(() => api.issueStore.findingsFor(sampleFile()).length === 3, "3 findings in coding_rules.c");
+      await until(() => !!sampleFile() && api.issueStore.findingsFor(sampleFile()).some((f) => f.ruleId === "sca-own:goto"), "findings in coding_rules.c");
+      total = api.issueStore.findingsFor(sampleFile()).length;
     });
 
     after(async () => {
@@ -285,17 +291,17 @@ describe("SCA extension (integration)", () => {
     it("follows .sca.json: a rule set turned off disappears, and comes back", async () => {
       await vscode.workspace.fs.writeFile(rel(".sca.json"), new TextEncoder().encode('{ "rules": { "sca-own:goto": false } }'));
       await until(() => api.issueStore.findingsFor(sampleFile()).every((f) => f.ruleId !== "sca-own:goto"), "goto findings off");
-      assert.strictEqual(api.issueStore.findingsFor(sampleFile()).length, 2);
+      assert.strictEqual(api.issueStore.findingsFor(sampleFile()).length, total - 1);
       await remove(rel(".sca.json"));
-      await until(() => api.issueStore.findingsFor(sampleFile()).length === 3, "goto findings back");
+      await until(() => api.issueStore.findingsFor(sampleFile()).length === total, "goto findings back");
     });
 
     it("hides findings after Save Baseline and shows them again after Clear Baseline", async () => {
-      assert.strictEqual(await vscode.commands.executeCommand<number>("sca.saveBaseline"), 3);
+      assert.strictEqual(await vscode.commands.executeCommand<number>("sca.saveBaseline"), total);
       await until(() => api.issueStore.findingsFor(sampleFile()).length === 0, "findings hidden by baseline");
-      assert.strictEqual(api.issueStore.hiddenCount(), 3);
+      assert.strictEqual(api.issueStore.hiddenCount(), total);
       assert.strictEqual(await vscode.commands.executeCommand<number>("sca.clearBaseline", true), 1);
-      await until(() => api.issueStore.findingsFor(sampleFile()).length === 3, "findings back after clear");
+      await until(() => api.issueStore.findingsFor(sampleFile()).length === total, "findings back after clear");
       assert.strictEqual(api.issueStore.hiddenCount(), 0);
     });
 
@@ -310,11 +316,41 @@ describe("SCA extension (integration)", () => {
     });
 
     it("uses the same icon as the Problems panel (severity)", () => {
-      const [f] = api.issueStore.findingsFor(sampleFile());
+      const f = api.issueStore.findingsFor(sampleFile()).find((x) => x.ruleId === "sca-own:goto")!;
       assert.strictEqual(f.certainty, "definite");
       assert.strictEqual(f.severity, "warning");
-      const diag = vscode.languages.getDiagnostics(sample).find((d) => d.source === "SCA")!;
+      const diag = vscode.languages.getDiagnostics(sample).find((d) => d.source === "SCA" && d.code === "sca-own:goto")!;
       assert.strictEqual(diag.severity, vscode.DiagnosticSeverity.Warning);
+    });
+  });
+
+  describe("rule help", () => {
+    it("Explain Rule returns the rule page for a rule ID", async () => {
+      const md = await vscode.commands.executeCommand<string>("sca.explainRule", "sca-own:goto");
+      assert.match(md ?? "", /^# goto/);
+      assert.match(md ?? "", /## How to fix/);
+    });
+
+    it("hovering an SCA finding shows the rule help with an Explain link", async () => {
+      const api = (await vscode.extensions.getExtension(EXTENSION_ID)!.activate()) as ScaApi;
+      const folder = vscode.workspace.workspaceFolders![0];
+      const file = path.join(folder.uri.fsPath, "div_by_zero.c");
+      const uri = vscode.Uri.file(file);
+      await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+      api.issueStore.setFindings(file, [
+        createFinding({
+          ruleId: "runtime-bugfinder:div-zero",
+          message: "Divisor y can be 0.",
+          file,
+          range: { start: { line: 6, column: 16 }, end: { line: 6, column: 21 } },
+          certainty: "possible",
+        }),
+      ]);
+      const hovers = await vscode.commands.executeCommand<vscode.Hover[]>("vscode.executeHoverProvider", uri, new vscode.Position(5, 17));
+      const text = hovers.flatMap((h) => h.contents.map((c) => (typeof c === "string" ? c : c.value))).join("\n");
+      assert.match(text, /Division by zero/);
+      assert.match(text, /command:sca\.explainRule/);
+      api.issueStore.setFindings(file, []);
     });
   });
 

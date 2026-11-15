@@ -2,7 +2,8 @@ import * as assert from "assert";
 import * as path from "path";
 import { Analyzer } from "../../core/analyzer";
 import { applyBaseline, baselineEntries, createBaseline, parseBaseline } from "../../core/baseline";
-import { ALL_CHECKS } from "../../core/checks";
+import { checkGoto, checkSwitchDefault, checkSwitchFallthrough, checkUncheckedReturn } from "../../core/checks/codingRules";
+import { checkRuntime } from "../../core/checks/runtime";
 import { createFinding, Finding } from "../../core/finding";
 import { findJustifications, justificationFor } from "../../core/justify";
 import { SourceParser } from "../../core/parser/parser";
@@ -10,6 +11,9 @@ import { CompileDatabase, parseFlags, splitCommand } from "../../core/project/co
 import { isRuleEnabled, parseConfig, rulePatternMatches } from "../../core/project/config";
 import { Project } from "../../core/project/project";
 import { renderReport } from "../../core/report";
+
+/** The run-time checks and the first coding rules (the newer rules have their own sample tests). */
+const CHECKS = [checkRuntime, checkSwitchDefault, checkGoto, checkSwitchFallthrough, checkUncheckedReturn];
 
 const WASM_DIR = path.join(__dirname, "..", "..", "parsers");
 const ROOT = path.resolve("/proj");
@@ -129,7 +133,7 @@ describe("core/project Project + analyzer (unit)", () => {
 
   it("analyzes with #if branches, header macros, severity overrides and justifications", () => {
     const project = Project.load(ROOT, memFs(files));
-    const analyzer = new Analyzer(ALL_CHECKS, parser);
+    const analyzer = new Analyzer(CHECKS, parser);
     const file = P("src", "a.c");
     const out = analyzer.analyze(file, SRC, project.contextFor(file));
     const view = out.map((f) => `${f.range.start.line}:${f.ruleId}:${f.certainty}:${f.severity}:${f.status}`);
@@ -142,13 +146,13 @@ describe("core/project Project + analyzer (unit)", () => {
 
   it("turns rules off from .sca.json", () => {
     const project = Project.load(ROOT, memFs({ ...files, [P(".sca.json")]: JSON.stringify({ ruleSets: { "runtime-bugfinder": false } }) }));
-    const out = new Analyzer(ALL_CHECKS, parser).analyze(P("src", "a.c"), SRC, project.contextFor(P("src", "a.c")));
+    const out = new Analyzer(CHECKS, parser).analyze(P("src", "a.c"), SRC, project.contextFor(P("src", "a.c")));
     assert.deepStrictEqual(out.map((f) => f.ruleId), ["sca-own:goto"]);
   });
 
   it("caches results by content and project version", () => {
     const project = Project.load(ROOT, memFs(files));
-    const analyzer = new Analyzer(ALL_CHECKS, parser);
+    const analyzer = new Analyzer(CHECKS, parser);
     const file = P("src", "a.c");
     analyzer.analyze(file, SRC, project.contextFor(file));
     analyzer.analyze(file, SRC, project.contextFor(file));

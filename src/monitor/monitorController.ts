@@ -5,6 +5,8 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import { Analyzer } from "../core/analyzer";
+import { mergeFindings } from "../core/backends/merge";
+import { enabledBackends, runBackends } from "../core/backends/run";
 import { applyBaseline, BASELINE_FILE, baselineEntries, BaselineEntry, createBaseline } from "../core/baseline";
 import { Finding } from "../core/finding";
 import { IssueStore } from "../core/issueStore";
@@ -38,6 +40,8 @@ export class MonitorController implements vscode.Disposable {
   /** Last analysis per file before the baseline filter: findings and the text they were found in. */
   private readonly raw = new Map<string, { findings: Finding[]; text: string }>();
   private readonly disposables: vscode.Disposable[] = [];
+  /** Backend problems already written to the output channel (each once per session). */
+  private readonly reportedProblems = new Set<string>();
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -233,10 +237,34 @@ export class MonitorController implements vscode.Disposable {
       return;
     }
     const project = this.projects.projectFor(file);
-    const findings = this.analyzer.analyze(file, text, project?.contextFor(file));
+    const ctx = project?.contextFor(file);
+    const findings = this.analyzer.analyze(file, text, ctx);
     if (signal.aborted || !this.isTracked(file)) {
       return;
     }
+    this.publish(file, text, findings, project);
+    // External backends (when .sca.json turns them on) take longer: SCA's own findings are shown first,
+    // the merged list replaces them when the tools are done.
+    if (enabledBackends(ctx?.config).length === 0) {
+      return;
+    }
+    const runs = await runBackends(file, ctx, { signal });
+    if (signal.aborted || !this.isTracked(file)) {
+      return;
+    }
+    for (const r of runs) {
+      for (const p of r.problems) {
+        if (!this.reportedProblems.has(`${r.backend}: ${p}`)) {
+          this.reportedProblems.add(`${r.backend}: ${p}`);
+          this.output.appendLine(`${r.backend}: ${p}`);
+        }
+      }
+    }
+    const external = this.analyzer.applyProject(text, runs.flatMap((r) => r.findings), ctx);
+    this.publish(file, text, mergeFindings(findings, external), project);
+  }
+
+  private publish(file: string, text: string, findings: Finding[], project: ReturnType<ProjectManager["projectFor"]>): void {
     this.raw.set(this.key(file), { findings, text });
     const baseline = project && analysisConfig().baseline ? this.projects.baselineFor(project) : undefined;
     if (project && baseline) {

@@ -161,7 +161,9 @@
         <div class="stat"><div class="n" style="color:var(--planned)">2</div><div class="l">need our own checks</div></div>
         <div class="stat"><div class="n" style="color:var(--none)">3</div><div class="l">not covered for now</div></div>
       </div>
-      <p class="note"><b>Status:</b> this is the <b>target</b> coverage. Implemented today: <code>runtime-bugfinder</code> (div-zero, null-deref, uninit-read, out-of-bounds, overflow, uint-wrap, invalid-shift, conversion, dead-code, endless-loop, stack-escape) and <code>sca-own</code> (switch-default, goto, switch-fallthrough, unchecked-return, invariant-condition).</p>
+      <!-- generated:status -->
+<p class="note"><b>Status:</b> this is the <b>target</b> coverage. Implemented today: <code>runtime-bugfinder</code> (11: div-zero, null-deref, uninit-read, out-of-bounds, overflow, uint-wrap, invalid-shift, conversion, dead-code, endless-loop, stack-escape), <code>sca-own</code> (38: float-equality, assignment-in-condition, assignment-as-value, side-effect-in-logical, increment-in-expression, comma-operator, operator-precedence, sizeof-side-effect, switch-default, goto, switch-fallthrough, missing-braces, empty-body, else-if-without-else, loop-float-counter, loop-counter-modified, switch-too-few-cases, switch-on-boolean, invariant-condition, recursion, octal-constant, lowercase-suffix, unsigned-suffix, implicit-conversion, signed-unsigned-compare, signed-bitwise, vla, bitfield-type, int-division-to-float, unused-variable, unused-parameter, shadowing, missing-volatile, internal-linkage, dynamic-memory, magic-number, empty-parameter-list, unchecked-return), <code>his-metrics</code> (7: cyclomatic, nesting, statements, parameters, returns, calls, comment-density). Every rule is described in the rule reference (docs/rules.md).</p>
+<!-- /generated:status -->
     </div>
   </section>
 

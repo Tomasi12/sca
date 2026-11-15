@@ -3,7 +3,9 @@
 The catalog lists **which rule sets SCA supports, how well, with which backend tool, and why something is not covered**.
 Users turn rule sets (or single rules) on and off.
 
-> **Status:** the catalog shows the **target** coverage. Rule sets with at least one working rule have `"implemented": true` and list them in `implementedRules`: today `runtime-bugfinder` (`div-zero`, `null-deref`, `uninit-read`, `out-of-bounds`, `overflow`, `uint-wrap`, `invalid-shift`, `conversion`, `dead-code`, `endless-loop`, `stack-escape`) and `sca-own` (`switch-default`, `goto`, `switch-fallthrough`, `unchecked-return`, `invariant-condition`).
+<!-- generated:status -->
+> **Status:** the catalog shows the **target** coverage. Rule sets with at least one working rule have `"implemented": true` and list them in `implementedRules`: today `runtime-bugfinder` (11: `div-zero`, `null-deref`, `uninit-read`, `out-of-bounds`, `overflow`, `uint-wrap`, `invalid-shift`, `conversion`, `dead-code`, `endless-loop`, `stack-escape`), `sca-own` (38: `float-equality`, `assignment-in-condition`, `assignment-as-value`, `side-effect-in-logical`, `increment-in-expression`, `comma-operator`, `operator-precedence`, `sizeof-side-effect`, `switch-default`, `goto`, `switch-fallthrough`, `missing-braces`, `empty-body`, `else-if-without-else`, `loop-float-counter`, `loop-counter-modified`, `switch-too-few-cases`, `switch-on-boolean`, `invariant-condition`, `recursion`, `octal-constant`, `lowercase-suffix`, `unsigned-suffix`, `implicit-conversion`, `signed-unsigned-compare`, `signed-bitwise`, `vla`, `bitfield-type`, `int-division-to-float`, `unused-variable`, `unused-parameter`, `shadowing`, `missing-volatile`, `internal-linkage`, `dynamic-memory`, `magic-number`, `empty-parameter-list`, `unchecked-return`), `his-metrics` (7: `cyclomatic`, `nesting`, `statements`, `parameters`, `returns`, `calls`, `comment-density`). Every rule is described in [rules.json](rules.json) and in the [rule reference](../docs/rules.md).
+<!-- /generated:status -->
 
 📊 **Overview presentation:** open [coverage-presentation.html](coverage-presentation.html) in a browser.
 
