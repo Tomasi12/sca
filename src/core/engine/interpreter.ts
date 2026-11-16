@@ -57,6 +57,8 @@ export interface Environment {
   callResult(name: string): Value | undefined;
   /** Start value of a parameter. */
   paramValue(fnName: string, info: VarInfo): Value;
+  /** For a function in this file that can never return: whether it is declared so (`_Noreturn`) or only behaves so. */
+  noReturn?(name: string): "declared" | "implicit" | undefined;
 }
 
 export interface Observer {
@@ -93,6 +95,12 @@ export interface Observer {
   allocSize?(at: Node, size: Node, element: string, bytes: number, constant: number | undefined): void;
   /** `sizeof(p)` of the pointer p, used as the size of the memory p points to. */
   pointerSizeof?(at: Node, sizeofNode: Node, name: string): void;
+  /** A path of a function with a return type reaches the end of the body without a return statement. */
+  fallOff?(at: Node): void;
+  /** A cast to an enum type of a value that may not be one of its constants (`values` sorted). */
+  enumCast?(at: Node, value: Value, values: readonly number[], typeName: string): void;
+  /** A call to a function of this file that never returns and is not declared that way. */
+  noReturnCall?(at: Node, name: string): void;
 }
 
 /** Where a memory block was allocated. */
@@ -438,6 +446,28 @@ export class FunctionAnalysis {
     this.typing = new Typing({ decls: env.decls, locals: this.model.declTypes, hidden: this.model.locals, macroBody: (n) => env.macroBody(n) });
   }
 
+  isKnownFunction(name: string): boolean {
+    return this.env.isFunction(name);
+  }
+
+  /** True for a variable or object (not a function, not a function pointer) visible in this function. */
+  isDataObject(name: string): boolean {
+    const isData = (t: CType | undefined): boolean => {
+      const r = this.env.decls.resolve(t);
+      if (!r || r.k === "func" || r.k === "unknown") {
+        return false;
+      }
+      return !(r.k === "ptr" && this.env.decls.resolve(r.to)?.k === "func");
+    };
+    if (this.model.locals.has(name)) {
+      return isData(this.model.declTypes.get(name));
+    }
+    if (this.env.isFunction(name)) {
+      return false;
+    }
+    return isData(this.env.decls.varType(name));
+  }
+
   /** The state at the start of a block after solving (undefined: never reached). */
   stateAt(block: number): State | undefined {
     return this.inStates[block];
@@ -514,6 +544,7 @@ export class FunctionAnalysis {
         const last = b.items[b.items.length - 1];
         if (!out.dead && b.succ.some((e) => e.to === this.cfg.exit) && last?.kind !== "return" && last?.node.type !== "throw_statement") {
           this.leaks(end, out);
+          this.observer?.fallOff?.(end);
         }
         this.edgeStates(b.succ, out);
       });
@@ -644,6 +675,9 @@ export class FunctionAnalysis {
         const t = desc ? this.env.types.ofDescriptor(desc) : undefined;
         if (t && value && !st.dead) {
           this.observer?.cast?.(node, v, this.typing.scalar(value), t);
+        }
+        if (desc && !st.dead) {
+          this.enumCast(node, this.typing.descriptor(desc), text(desc), v);
         }
         return t ? convert(v, t) : unknown();
       }
@@ -1060,6 +1094,9 @@ export class FunctionAnalysis {
         if (!st.dead && Number.isFinite(t.hi)) {
           this.observer?.cast?.(node, v, this.typing.scalar(args[0]), t);
         }
+        if (!st.dead) {
+          this.enumCast(node, { k: "named", name: text(inner) }, text(inner), v);
+        }
         return convert(v, t);
       }
     }
@@ -1086,6 +1123,14 @@ export class FunctionAnalysis {
         if (args[0]) {
           this.release(node, args[0], values[0], st);
         }
+        return unknown();
+      }
+      const never = this.env.noReturn?.(name);
+      if (never) {
+        if (never === "implicit") {
+          this.observer?.noReturnCall?.(node, name);
+        }
+        st.dead = true; // nothing after the call runs
         return unknown();
       }
       if (!PURE_LIB.test(name)) {
@@ -1139,6 +1184,18 @@ export class FunctionAnalysis {
       return this.typed(node, r ? noHeap(r) : unknown());
     }
     return unknown();
+  }
+
+  /** `(Mode)x`: reports values outside the range of the enum's constants. */
+  private enumCast(node: Node, t: CType, typeName: string, v: Value): void {
+    if (!this.observer?.enumCast || v.kind !== "int") {
+      return;
+    }
+    const r = this.env.decls.resolve(t);
+    if (r?.k !== "enum" || !r.values) {
+      return;
+    }
+    this.observer.enumCast(node, v, [...r.values].sort((a, b) => a - b), typeName.replace(/\s+/g, " ").trim());
   }
 
   private allocate(node: Node, name: string, args: readonly Node[], values: readonly Value[], st: State): Value {

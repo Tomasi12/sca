@@ -577,6 +577,150 @@ const char *after(unsigned int n)
 }
 ```
 
+## Functions and values
+
+| Rule | What it finds | Default |
+|---|---|---|
+| [`runtime-bugfinder:missing-return`](#runtime-bugfindermissing-return) | A function that returns a value can reach the end of its body without a return statement. | on |
+| [`runtime-bugfinder:invalid-enum`](#runtime-bugfinderinvalid-enum) | An integer is cast to an enum type, but its value can be outside the range of the enum's constants. | on |
+| [`runtime-bugfinder:no-return-call`](#runtime-bugfinderno-return-call) | A function of the file can never return (an endless loop, or every path stops the program), but it is not declared _Noreturn. | on |
+| [`runtime-bugfinder:bad-function-pointer`](#runtime-bugfinderbad-function-pointer) | A function pointer is made by casting the address of a data object (an array, a variable) and then called. | on |
+
+### runtime-bugfinder:missing-return
+
+**Missing return value.** A function that returns a value can reach the end of its body without a return statement.
+
+*Why:* The caller then uses whatever happens to be in the return register: undefined behavior that often looks like a random value.
+
+*Fix:* Return a value on every path, for example a safe default after a switch.
+
+```c
+/* breaks the rule */
+int sign(int x)
+{
+    if (x > 0) {
+        return 1;
+    } else if (x < 0) {
+        return -1;
+    }
+}
+
+/* follows the rule */
+int sign(int x)
+{
+    if (x > 0) {
+        return 1;
+    } else if (x < 0) {
+        return -1;
+    }
+    return 0;
+}
+```
+
+### runtime-bugfinder:invalid-enum
+
+**Invalid enum value.** An integer is cast to an enum type, but its value can be outside the range of the enum's constants.
+
+*Why:* Code that switches on the enum assumes one of its constants; an out-of-range value takes a path nobody planned for.
+
+*Fix:* Check the integer against the enum's range before the cast, and map bad values to a safe constant.
+
+```c
+/* breaks the rule */
+typedef enum { RED = 0, GREEN = 1, BLUE = 2 } Color;
+
+Color color_of(unsigned char raw)
+{
+    return (Color)raw;
+}
+
+/* follows the rule */
+typedef enum { RED = 0, GREEN = 1, BLUE = 2 } Color;
+
+Color color_of(unsigned char raw)
+{
+    if (raw > 2U) {
+        return RED;
+    }
+    return (Color)raw;
+}
+```
+
+### runtime-bugfinder:no-return-call
+
+**Call to a function that never returns.** A function of the file can never return (an endless loop, or every path stops the program), but it is not declared _Noreturn.
+
+*Why:* Readers and tools expect the code after the call to run. A hidden endless loop also hangs the program in a way that is easy to miss (for example until a watchdog reset).
+
+*Fix:* Declare the function _Noreturn (or with a noreturn attribute) when that is intended; otherwise give it a way out.
+
+```c
+/* breaks the rule */
+static void halt(void)
+{
+    for (;;) {
+    }
+}
+
+void check(int ok)
+{
+    if (ok == 0) {
+        halt();
+    }
+}
+
+/* follows the rule */
+static void halt(void)
+{
+    for (;;) {
+        if (stop_requested() != 0) {
+            return;
+        }
+    }
+}
+
+void check(int ok)
+{
+    if (ok == 0) {
+        halt();
+    }
+}
+```
+
+### runtime-bugfinder:bad-function-pointer
+
+**Call through a function pointer made from data.** A function pointer is made by casting the address of a data object (an array, a variable) and then called.
+
+*Why:* Data memory does not hold code for this function; the call jumps into the data, which crashes or runs garbage (and is often blocked by the memory protection).
+
+*Fix:* Point the function pointer to a real function. Calling code at a fixed address (a boot loader) should use that address as a constant, with a justification.
+
+```c
+/* breaks the rule */
+typedef int (*Handler)(int);
+static unsigned char code_buf[64];
+
+int run(int x)
+{
+    Handler h = (Handler)(void *)code_buf;
+    return h(x);
+}
+
+/* follows the rule */
+typedef int (*Handler)(int);
+
+static int twice(int x)
+{
+    return 2 * x;
+}
+
+int run(int x)
+{
+    Handler h = twice;
+    return h(x);
+}
+```
+
 ## Expressions
 
 | Rule | What it finds | Default |

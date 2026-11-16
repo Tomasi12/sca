@@ -125,7 +125,7 @@
       "backends": ["clang-analyzer", "cppcheck", "sca-native"],
       "iso26262": ["static-analysis", "data-flow-analysis", "control-flow-analysis"],
       "implemented": true,
-      "implementedRules": ["div-zero", "null-deref", "uninit-read", "out-of-bounds", "overflow", "uint-wrap", "invalid-shift", "conversion", "dead-code", "endless-loop", "stack-escape", "memory-leak", "double-free", "use-after-free", "bad-free", "dangling-pointer", "unchecked-alloc", "alloc-size", "sizeof-pointer", "pointer-arith"],
+      "implementedRules": ["div-zero", "null-deref", "uninit-read", "out-of-bounds", "overflow", "uint-wrap", "invalid-shift", "conversion", "dead-code", "endless-loop", "stack-escape", "memory-leak", "double-free", "use-after-free", "bad-free", "dangling-pointer", "unchecked-alloc", "alloc-size", "sizeof-pointer", "pointer-arith", "missing-return", "invalid-enum", "no-return-call", "bad-function-pointer"],
       "reason": "Division by zero, null dereference, uninitialized reads, out-of-bounds, leaks: found on many paths, but not proven absent (unsound by design)."
     },
     {

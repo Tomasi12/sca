@@ -224,6 +224,46 @@ export const RULES: readonly RuleInfo[] = [
     },
   ]),
 
+  // --------------------------------------------------------------------------------------- functions and values
+  ...group("run-time", "Functions and values", [
+    {
+      id: "runtime-bugfinder:missing-return",
+      title: "Missing return value",
+      summary: "A function that returns a value can reach the end of its body without a return statement.",
+      rationale: "The caller then uses whatever happens to be in the return register: undefined behavior that often looks like a random value.",
+      fix: "Return a value on every path, for example a safe default after a switch.",
+      bad: "int sign(int x)\n{\n    if (x > 0) {\n        return 1;\n    } else if (x < 0) {\n        return -1;\n    }\n}",
+      good: "int sign(int x)\n{\n    if (x > 0) {\n        return 1;\n    } else if (x < 0) {\n        return -1;\n    }\n    return 0;\n}",
+    },
+    {
+      id: "runtime-bugfinder:invalid-enum",
+      title: "Invalid enum value",
+      summary: "An integer is cast to an enum type, but its value can be outside the range of the enum's constants.",
+      rationale: "Code that switches on the enum assumes one of its constants; an out-of-range value takes a path nobody planned for.",
+      fix: "Check the integer against the enum's range before the cast, and map bad values to a safe constant.",
+      bad: "typedef enum { RED = 0, GREEN = 1, BLUE = 2 } Color;\n\nColor color_of(unsigned char raw)\n{\n    return (Color)raw;\n}",
+      good: "typedef enum { RED = 0, GREEN = 1, BLUE = 2 } Color;\n\nColor color_of(unsigned char raw)\n{\n    if (raw > 2U) {\n        return RED;\n    }\n    return (Color)raw;\n}",
+    },
+    {
+      id: "runtime-bugfinder:no-return-call",
+      title: "Call to a function that never returns",
+      summary: "A function of the file can never return (an endless loop, or every path stops the program), but it is not declared _Noreturn.",
+      rationale: "Readers and tools expect the code after the call to run. A hidden endless loop also hangs the program in a way that is easy to miss (for example until a watchdog reset).",
+      fix: "Declare the function _Noreturn (or with a noreturn attribute) when that is intended; otherwise give it a way out.",
+      bad: "static void halt(void)\n{\n    for (;;) {\n    }\n}\n\nvoid check(int ok)\n{\n    if (ok == 0) {\n        halt();\n    }\n}",
+      good: "static void halt(void)\n{\n    for (;;) {\n        if (stop_requested() != 0) {\n            return;\n        }\n    }\n}\n\nvoid check(int ok)\n{\n    if (ok == 0) {\n        halt();\n    }\n}",
+    },
+    {
+      id: "runtime-bugfinder:bad-function-pointer",
+      title: "Call through a function pointer made from data",
+      summary: "A function pointer is made by casting the address of a data object (an array, a variable) and then called.",
+      rationale: "Data memory does not hold code for this function; the call jumps into the data, which crashes or runs garbage (and is often blocked by the memory protection).",
+      fix: "Point the function pointer to a real function. Calling code at a fixed address (a boot loader) should use that address as a constant, with a justification.",
+      bad: "typedef int (*Handler)(int);\nstatic unsigned char code_buf[64];\n\nint run(int x)\n{\n    Handler h = (Handler)(void *)code_buf;\n    return h(x);\n}",
+      good: "typedef int (*Handler)(int);\n\nstatic int twice(int x)\n{\n    return 2 * x;\n}\n\nint run(int x)\n{\n    Handler h = twice;\n    return h(x);\n}",
+    },
+  ]),
+
   // -------------------------------------------------------------------------------------------- expressions
   ...group("coding-rule", "Expressions", [
     {

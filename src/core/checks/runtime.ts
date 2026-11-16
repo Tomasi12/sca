@@ -79,9 +79,18 @@ export const MEMORY_RULES = [
   POINTER_ARITH_RULE,
 ];
 
+export const MISSING_RETURN_RULE = "runtime-bugfinder:missing-return";
+export const INVALID_ENUM_RULE = "runtime-bugfinder:invalid-enum";
+export const NO_RETURN_CALL_RULE = "runtime-bugfinder:no-return-call";
+export const BAD_FUNCTION_POINTER_RULE = "runtime-bugfinder:bad-function-pointer";
+
+/** Function and value sanity rules (also produced by checkRuntime). */
+export const FUNCTION_RULES = [MISSING_RETURN_RULE, INVALID_ENUM_RULE, NO_RETURN_CALL_RULE, BAD_FUNCTION_POINTER_RULE];
+
 /** Rules this check produces (div-zero included). */
 export const RUNTIME_RULES = [
   ...MEMORY_RULES,
+  ...FUNCTION_RULES,
   DIV_ZERO_RULE,
   NULL_DEREF_RULE,
   UNINIT_RULE,
@@ -134,8 +143,125 @@ export function checkRuntime(source: SourceContext): Finding[] {
       continue;
     }
     findings.push(...syntacticChecks(file, fa, engine.within(fn, "return_statement")));
+    findings.push(...badFunctionPointers(file, fa, engine.within(fn, "call_expression"), engine.within(fn, "init_declarator", "assignment_expression")));
   }
   return findings;
+}
+
+/** `(name)` where name is not a variable or function: a type name in a cast that tree-sitter could not tell apart. */
+function isTypeInParens(n: Node | null, fa: FunctionAnalysis): boolean {
+  if (n?.type !== "parenthesized_expression") {
+    return false;
+  }
+  const inner = n.namedChildren.filter((c): c is Node => c !== null && c.type !== "comment");
+  return inner.length === 1 && isTypeName(inner[0], fa);
+}
+
+/** An identifier that is not a variable or function here, so it must be a type name. */
+function isTypeName(n: Node, fa: FunctionAnalysis): boolean {
+  return n.type === "identifier" && !fa.model.locals.has(n.text) && !fa.isDataObject(n.text) && !fa.isKnownFunction(n.text);
+}
+
+/** `(T)` or `(T1)(T2)`: only type names, as tree-sitter reads the casts in front of `&x`. */
+function isCastPrefix(n: Node | null, fa: FunctionAnalysis): boolean {
+  if (isTypeInParens(n, fa)) {
+    return true;
+  }
+  if (n?.type !== "call_expression" || !isTypeInParens(n.childForFieldName("function"), fa)) {
+    return false;
+  }
+  const args = n.childForFieldName("arguments")?.namedChildren.filter((c): c is Node => c !== null && c.type !== "comment") ?? [];
+  return args.length === 1 && isTypeName(args[0], fa);
+}
+
+/**
+ * Calls through a function pointer that was made by casting a data object (`(Fn)(uintptr_t)buffer`, `(Fn)&x`).
+ * A cast from an integer constant (a fixed address, as in a boot loader) is not reported.
+ */
+function badFunctionPointers(file: string, fa: FunctionAnalysis, calls: readonly Node[], defs: readonly Node[]): Finding[] {
+  const out: Finding[] = [];
+  // What a value built by casts really is: the data object it comes from, or undefined.
+  const dataSource = (value: Node): string | undefined => {
+    let n = value;
+    let casts = 0;
+    for (;;) {
+      if (n.type === "parenthesized_expression") {
+        n = n.namedChildren.find((c) => c !== null && c.type !== "comment") ?? n;
+        if (n.type === "parenthesized_expression" && n.namedChildCount === 0) {
+          return undefined;
+        }
+      } else if (n.type === "cast_expression") {
+        casts++;
+        const v = n.childForFieldName("value");
+        if (!v) {
+          return undefined;
+        }
+        n = v;
+      } else if (n.type === "call_expression" && n.childForFieldName("function")?.type === "parenthesized_expression" && (n.childForFieldName("arguments")?.namedChildCount ?? 0) === 1) {
+        casts++; // `(T)(x)` read as a call
+        n = n.childForFieldName("arguments")!.namedChildren.find((c) => c !== null && c.type !== "comment")!;
+      } else if (n.type === "binary_expression" && n.childForFieldName("operator")?.type === "&" && isCastPrefix(n.childForFieldName("left"), fa)) {
+        // `(uintptr_t)&x` (or `(Fn)(uintptr_t)&x`) read as a bitwise and of the type(s) and `x`
+        const right = n.childForFieldName("right");
+        const root = right ? rootIdentifier(right) : undefined;
+        return root && fa.isDataObject(root) ? root : undefined;
+      } else {
+        break;
+      }
+    }
+    if (casts === 0) {
+      return undefined;
+    }
+    if (n.type === "pointer_expression" && n.childForFieldName("operator")?.type === "&") {
+      const arg = n.childForFieldName("argument");
+      const root = arg ? rootIdentifier(arg) : undefined;
+      return root && fa.isDataObject(root) ? root : undefined;
+    }
+    return n.type === "identifier" && fa.isDataObject(n.text) ? n.text : undefined;
+  };
+  for (const call of calls) {
+    const callee = call.childForFieldName("function");
+    if (!callee) {
+      continue;
+    }
+    let sources: (string | undefined)[];
+    let name = callee.text;
+    if (callee.type === "identifier" && fa.model.locals.has(callee.text) && !fa.model.params.has(callee.text)) {
+      // A local function pointer: every value it is given in the function.
+      const values: Node[] = [];
+      for (const d of defs) {
+        const target = d.type === "init_declarator" ? declaredName(d) : d.childForFieldName("left")?.text;
+        const value = d.childForFieldName(d.type === "init_declarator" ? "value" : "right");
+        if (target === callee.text && value && (d.type === "init_declarator" || d.childForFieldName("operator")?.type === "=")) {
+          values.push(value);
+        }
+      }
+      if (values.length === 0) {
+        continue;
+      }
+      sources = values.map(dataSource);
+    } else if (callee.type === "parenthesized_expression") {
+      sources = [dataSource(callee)];
+      name = "the function pointer";
+    } else {
+      continue;
+    }
+    const bad = sources.filter((s): s is string => s !== undefined);
+    if (bad.length === 0) {
+      continue;
+    }
+    const always = bad.length === sources.length;
+    out.push(
+      createFinding({
+        ruleId: BAD_FUNCTION_POINTER_RULE,
+        message: `${always ? "Call through an invalid function pointer" : "Possible call through an invalid function pointer"}: ${name === "the function pointer" ? name : `'${name}'`} is made by casting the data object '${bad[0]}', not a function.`,
+        file,
+        range: nodeRange(callee),
+        certainty: always ? "definite" : "possible",
+      })
+    );
+  }
+  return out;
 }
 
 /** Replays one solved function and turns its events into findings. */
@@ -156,6 +282,9 @@ function judgeFunction(file: string, fa: FunctionAnalysis, literalZero: Readonly
   const offsets = new Map<number, { at: Node; v: Value; length: number; array: string }>();
   const sizes = new Map<number, { at: Node; size: Node; element: string; bytes: number; constant?: number }>();
   const sizeofs = new Map<number, { at: Node; name: string }>();
+  const fallOffs = new Map<number, Node>();
+  const enumCasts = new Map<number, { at: Node; v: Value; values: readonly number[]; typeName: string }>();
+  const noReturnCalls = new Map<number, { at: Node; name: string }>();
   const merge = <K, T extends { v: Value }>(m: Map<K, T>, k: K, entry: T) => {
     const old = m.get(k);
     m.set(k, old ? { ...entry, v: join(old.v, entry.v) } : entry);
@@ -193,6 +322,9 @@ function judgeFunction(file: string, fa: FunctionAnalysis, literalZero: Readonly
       const old = branches.get(k);
       branches.set(k, { cond, truth, feasible: feasible || (old?.feasible ?? false) });
     },
+    fallOff: (at) => fallOffs.set(at.id, at),
+    enumCast: (at, v, values, typeName) => merge(enumCasts, at.id, { at, v, values, typeName }),
+    noReturnCall: (at, name) => noReturnCalls.set(at.id, { at, name }),
     blockUse: (at, ptr, v, status) => {
       const old = uses.get(ptr.id);
       uses.set(ptr.id, old ? { ...old, v: join(old.v, v), statuses: old.statuses.add(status) } : { at, ptr, v, statuses: new Set([status]) });
@@ -322,6 +454,34 @@ function judgeFunction(file: string, fa: FunctionAnalysis, literalZero: Readonly
   }
 
   memoryFindings(fa, add, { uses, frees, leaks, offsets, sizes, sizeofs });
+
+  if (fa.model.returnType && fa.name !== "main") {
+    for (const at of fallOffs.values()) {
+      add(MISSING_RETURN_RULE, `Missing return: ${fa.name}() returns a value, but a path reaches the end of the function without a return statement; the caller gets an undefined value.`, at, "definite");
+    }
+  }
+  for (const { at, v, values, typeName } of enumCasts.values()) {
+    const min = values[0];
+    const max = values[values.length - 1];
+    const high = v.hi > max && !v.wh;
+    const low = v.lo < min && !v.wl;
+    if (high || low) {
+      const always = (high && v.lo > max && !v.wl) || (low && v.hi < min && !v.wh);
+      add(INVALID_ENUM_RULE, `${always ? "Invalid enum value" : "Possibly invalid enum value"}: the value cast to ${typeName} can be [${fmt(v.lo)}, ${fmt(v.hi)}], but its constants go from ${min} to ${max}.`, at, always ? "definite" : "possible");
+    }
+  }
+  for (const { at, name } of noReturnCalls.values()) {
+    out.push(
+      createFinding({
+        ruleId: NO_RETURN_CALL_RULE,
+        message: `${name}() never returns: no path reaches its end, so nothing after this call runs. If that is intended, declare it _Noreturn; otherwise give it a way out.`,
+        file,
+        range: nodeRange(at),
+        certainty: "definite",
+        severity: "warning",
+      })
+    );
+  }
   out.push(...deadBranches(file, branches));
   out.push(...endlessLoops(file, loops, branches));
   return out;

@@ -13,7 +13,7 @@ export type CType =
   | { readonly k: "builtin"; readonly name: string }
   | { readonly k: "named"; readonly name: string }
   | { readonly k: "struct"; readonly tag: string }
-  | { readonly k: "enum" }
+  | { readonly k: "enum"; readonly values?: readonly number[] }
   | { readonly k: "ptr"; readonly to: CType }
   | { readonly k: "array"; readonly of: CType; readonly size?: string }
   | { readonly k: "func"; readonly ret: CType }
@@ -133,6 +133,8 @@ export function specifierType(spec: Node | null, out: DeclData | undefined, owne
     }
     case "enum_specifier": {
       const body = spec.childForFieldName("body");
+      // The values of the enum's constants, when every one of them is known.
+      let values: number[] | undefined = body ? [] : undefined;
       if (body && out) {
         let next: number | undefined = 0;
         for (const e of body.namedChildren) {
@@ -148,10 +150,15 @@ export function specifierType(spec: Node | null, out: DeclData | undefined, owne
           if (name && v !== undefined) {
             out.enums.set(name, v);
           }
+          if (v === undefined) {
+            values = undefined;
+          } else {
+            values?.push(v);
+          }
           next = v === undefined ? undefined : v + 1;
         }
       }
-      return { k: "enum" };
+      return values && values.length > 0 ? { k: "enum", values } : { k: "enum" };
     }
     default:
       return { k: "unknown" };

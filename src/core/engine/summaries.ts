@@ -62,6 +62,8 @@ export class FileEngine {
   /** Argument values of the calls in one caller (by call node id), from solving the caller. */
   private readonly callsByCaller = new Map<number, Map<number, readonly Value[]>>();
   private readonly busyCallers = new Set<number>();
+  /** Functions of the file that never return (null: they can return). */
+  private readonly noReturns = new Map<string, "declared" | "implicit" | null | "busy">();
   readonly decls: Declarations;
 
   constructor(
@@ -153,6 +155,39 @@ export class FileEngine {
 
   private analysis(fn: Node, mode: Mode, onLazy?: () => void): FunctionAnalysis {
     return new FunctionAnalysis(this.cfgFor(fn), this.environment(mode, onLazy), this.budget, this.modelFor(fn));
+  }
+
+  /**
+   * A function of this file that never returns: no path reaches its end (an endless loop, or every path calls
+   * abort() or another such function). "declared" when it says so (`_Noreturn`, `noreturn` attribute).
+   */
+  noReturn(name: string): "declared" | "implicit" | undefined {
+    const known = this.noReturns.get(name);
+    if (known !== undefined) {
+      return known === "busy" || known === null ? undefined : known;
+    }
+    const fn = this.functions.get(name);
+    if (!fn || fn.hasError) {
+      this.noReturns.set(name, null);
+      return undefined;
+    }
+    this.noReturns.set(name, "busy");
+    const cfg = this.cfgFor(fn);
+    let never = false;
+    if (!cfg.unsupported) {
+      const fa = this.analysis(fn, "summary");
+      never = fa.solve().ok && fa.stateAt(cfg.exit) === undefined;
+    }
+    let result: "declared" | "implicit" | null = null;
+    if (never) {
+      const NORETURN_MARK = /\b_Noreturn\b|\[\[\s*noreturn\s*\]\]|\bnoreturn\b|__attribute__\s*\(\(\s*(__)?noreturn|__declspec\s*\(\s*noreturn/;
+      const body = fn.childForFieldName("body");
+      const head = body ? fn.text.slice(0, body.startIndex - fn.startIndex) : fn.text;
+      const proto = this.nodes("declaration").some((d) => d.parent?.type === "translation_unit" && new RegExp(`\\b${name}\\s*\\(`).test(d.text) && NORETURN_MARK.test(d.text));
+      result = NORETURN_MARK.test(head) || proto ? "declared" : "implicit";
+    }
+    this.noReturns.set(name, result);
+    return result ?? undefined;
   }
 
   /** Parameters and locals of a function (built once, shared by the engine and the coding-rule checks). */
@@ -282,6 +317,7 @@ export class FileEngine {
       consts: this.consts,
       isStaticObject: (name) => this.staticObjects.has(name),
       isFunction: (name) => this.functions.has(name) || this.declaredFunctions.has(name),
+      noReturn: (name) => this.noReturn(name),
       globalRead: (path) => {
         if (mode === "lazy") {
           onLazy?.();

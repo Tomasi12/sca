@@ -24,7 +24,7 @@ describe("checks/run-time and coding rules (markers)", () => {
 
   after(() => parser.dispose());
 
-  for (const sample of ["runtime_checks.c", "memory_checks.c"]) {
+  for (const sample of ["runtime_checks.c", "memory_checks.c", "function_checks.c"]) {
     it(`matches every marker in tests/samples/${sample}`, () => {
       checkMarkers(sample);
     });
