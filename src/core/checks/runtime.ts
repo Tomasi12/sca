@@ -20,12 +20,23 @@
 //   runtime-bugfinder:endless-loop  a loop whose condition is always true, or a wait loop with no way out
 //   runtime-bugfinder:stack-escape  returning the address of a local variable
 //   sca-own:invariant-condition     an if condition that is always true or always false (reported with dead-code)
+//
+// Memory lifetime (blocks from malloc & co., see BlockStatus in the interpreter):
+//   runtime-bugfinder:memory-leak      the function ends while it still owns a block nobody else has
+//   runtime-bugfinder:double-free      free() of a block that was already freed
+//   runtime-bugfinder:use-after-free   *p, p->f, p[i] on a freed block
+//   runtime-bugfinder:bad-free         free() of memory that is not from malloc (an array, an address, a string)
+//   runtime-bugfinder:dangling-pointer use of a pointer to a local array after the array's block has ended
+//   runtime-bugfinder:unchecked-alloc  the result of malloc() & co. used without a NULL test
+//   runtime-bugfinder:alloc-size       malloc(n) for T values where n is not a multiple of sizeof(T)
+//   runtime-bugfinder:sizeof-pointer   sizeof(p) of a pointer used as the size of the memory p points to
+//   runtime-bugfinder:pointer-arith    a + n gives a pointer before the start or past the end of the array a
 
 import { Node } from "web-tree-sitter";
 import { SourceContext } from "../analyzer";
 import { engineFor } from "../engine";
 import { reachableBlocks } from "../engine/cfg";
-import { FunctionAnalysis } from "../engine/interpreter";
+import { BlockInfo, BlockStatus, FunctionAnalysis, SCOPE_BLOCK } from "../engine/interpreter";
 import { ScalarType } from "../engine/types";
 import { widthOf } from "../engine/typing";
 import { join, Value } from "../engine/value";
@@ -45,9 +56,32 @@ export const DEAD_CODE_RULE = "runtime-bugfinder:dead-code";
 export const ENDLESS_LOOP_RULE = "runtime-bugfinder:endless-loop";
 export const STACK_ESCAPE_RULE = "runtime-bugfinder:stack-escape";
 export const INVARIANT_RULE = "sca-own:invariant-condition";
+export const MEMORY_LEAK_RULE = "runtime-bugfinder:memory-leak";
+export const DOUBLE_FREE_RULE = "runtime-bugfinder:double-free";
+export const USE_AFTER_FREE_RULE = "runtime-bugfinder:use-after-free";
+export const BAD_FREE_RULE = "runtime-bugfinder:bad-free";
+export const DANGLING_RULE = "runtime-bugfinder:dangling-pointer";
+export const UNCHECKED_ALLOC_RULE = "runtime-bugfinder:unchecked-alloc";
+export const ALLOC_SIZE_RULE = "runtime-bugfinder:alloc-size";
+export const SIZEOF_POINTER_RULE = "runtime-bugfinder:sizeof-pointer";
+export const POINTER_ARITH_RULE = "runtime-bugfinder:pointer-arith";
+
+/** Memory lifetime rules (also produced by checkRuntime). */
+export const MEMORY_RULES = [
+  MEMORY_LEAK_RULE,
+  DOUBLE_FREE_RULE,
+  USE_AFTER_FREE_RULE,
+  BAD_FREE_RULE,
+  DANGLING_RULE,
+  UNCHECKED_ALLOC_RULE,
+  ALLOC_SIZE_RULE,
+  SIZEOF_POINTER_RULE,
+  POINTER_ARITH_RULE,
+];
 
 /** Rules this check produces (div-zero included). */
 export const RUNTIME_RULES = [
+  ...MEMORY_RULES,
   DIV_ZERO_RULE,
   NULL_DEREF_RULE,
   UNINIT_RULE,
@@ -116,6 +150,12 @@ function judgeFunction(file: string, fa: FunctionAnalysis, literalZero: Readonly
   const shifts = new Map<number, { at: Node; v: Value; width: number }>();
   const updates = new Map<number, { at: Node; name: string; t: ScalarType; before: Value; result: Value }>();
   const branches = new Map<string, { cond: Node; truth: boolean; feasible: boolean }>();
+  const uses = new Map<number, { at: Node; ptr: Node; v: Value; statuses: Set<BlockStatus | undefined> }>();
+  const frees = new Map<number, { at: Node; arg: Node; v: Value; statuses: Set<BlockStatus | undefined>; notHeap?: string }>();
+  const leaks = new Map<string, { at: Node; info?: BlockInfo; maybe: boolean }>();
+  const offsets = new Map<number, { at: Node; v: Value; length: number; array: string }>();
+  const sizes = new Map<number, { at: Node; size: Node; element: string; bytes: number; constant?: number }>();
+  const sizeofs = new Map<number, { at: Node; name: string }>();
   const merge = <K, T extends { v: Value }>(m: Map<K, T>, k: K, entry: T) => {
     const old = m.get(k);
     m.set(k, old ? { ...entry, v: join(old.v, entry.v) } : entry);
@@ -153,6 +193,22 @@ function judgeFunction(file: string, fa: FunctionAnalysis, literalZero: Readonly
       const old = branches.get(k);
       branches.set(k, { cond, truth, feasible: feasible || (old?.feasible ?? false) });
     },
+    blockUse: (at, ptr, v, status) => {
+      const old = uses.get(ptr.id);
+      uses.set(ptr.id, old ? { ...old, v: join(old.v, v), statuses: old.statuses.add(status) } : { at, ptr, v, statuses: new Set([status]) });
+    },
+    release: (at, arg, v, status, notHeap) => {
+      const old = frees.get(at.id);
+      frees.set(at.id, old ? { ...old, v: join(old.v, v), statuses: old.statuses.add(status), notHeap: old.notHeap ?? notHeap } : { at, arg, v, statuses: new Set([status]), notHeap });
+    },
+    leak: (at, block, info, maybe) => {
+      const k = `${at.id}:${block}`;
+      const old = leaks.get(k);
+      leaks.set(k, { at, info, maybe: maybe && (old?.maybe ?? true) });
+    },
+    pointerOffset: (at, v, length, array) => merge(offsets, at.id, { at, v, length, array }),
+    allocSize: (at, size, element, bytes, constant) => sizes.set(at.id, { at, size, element, bytes, constant }),
+    pointerSizeof: (_at, s, name) => sizeofs.set(s.id, { at: s, name }),
   });
 
   const out: Finding[] = [];
@@ -170,6 +226,10 @@ function judgeFunction(file: string, fa: FunctionAnalysis, literalZero: Readonly
       continue;
     }
     const name = ptr.text.replace(/\s+/g, " ");
+    if (v.heap?.startsWith("alloc:") && v.lo === 0 && v.hi > 0 && v.zero !== undefined) {
+      add(UNCHECKED_ALLOC_RULE, `Unchecked allocation: '${name}' is used without a NULL test, but ${v.zero}.`, ptr, "possible");
+      continue;
+    }
     if (v.hi === 0) {
       add(NULL_DEREF_RULE, `Null pointer dereference: '${name}' is always NULL here${v.zero ? ` (${v.zero})` : ""}.`, ptr, "definite");
     } else if (v.lo === 0 && v.zero !== undefined) {
@@ -261,9 +321,104 @@ function judgeFunction(file: string, fa: FunctionAnalysis, literalZero: Readonly
     }
   }
 
+  memoryFindings(fa, add, { uses, frees, leaks, offsets, sizes, sizeofs });
   out.push(...deadBranches(file, branches));
   out.push(...endlessLoops(file, loops, branches));
   return out;
+}
+
+interface MemoryEvents {
+  uses: Map<number, { at: Node; ptr: Node; v: Value; statuses: Set<BlockStatus | undefined> }>;
+  frees: Map<number, { at: Node; arg: Node; v: Value; statuses: Set<BlockStatus | undefined>; notHeap?: string }>;
+  leaks: Map<string, { at: Node; info?: BlockInfo; maybe: boolean }>;
+  offsets: Map<number, { at: Node; v: Value; length: number; array: string }>;
+  sizes: Map<number, { at: Node; size: Node; element: string; bytes: number; constant?: number }>;
+  sizeofs: Map<number, { at: Node; name: string }>;
+}
+
+/** "definite" when the block is freed on every path that reaches the line, "possible" when only on some. */
+function freedCertainty(statuses: Set<BlockStatus | undefined>, v: Value): Certainty | undefined {
+  const freed = [...statuses].filter((s) => s === "freed" || s === "maybe");
+  if (freed.length === 0) {
+    return undefined;
+  }
+  return !v.hm && [...statuses].every((s) => s === "freed") ? "definite" : "possible";
+}
+
+function memoryFindings(fa: FunctionAnalysis, add: (ruleId: string, message: string, node: Node, certainty: Certainty) => void, e: MemoryEvents): void {
+  const where = (v: Value) => {
+    const info = v.heap ? fa.blockInfo.get(v.heap) : undefined;
+    return info ? ` (from ${info.what} at line ${info.line})` : "";
+  };
+  for (const { ptr, v, statuses } of e.uses.values()) {
+    const name = ptr.text.replace(/\s+/g, " ");
+    if (v.heap?.startsWith(SCOPE_BLOCK)) {
+      const local = v.heap.slice(SCOPE_BLOCK.length);
+      const scope = innerScopeOf(fa.cfg.fn, local);
+      if (scope && (ptr.startIndex < scope.startIndex || ptr.startIndex >= scope.endIndex)) {
+        add(DANGLING_RULE, `${v.hm ? "Possible dangling pointer" : "Dangling pointer"}: '${name}' can point to the local array '${local}', which no longer exists after the block it is declared in (line ${scope.startPosition.row + 1}).`, ptr, v.hm ? "possible" : "definite");
+      }
+      continue;
+    }
+    const c = freedCertainty(statuses, v);
+    if (c) {
+      add(USE_AFTER_FREE_RULE, `${c === "definite" ? "Use after free" : "Possible use after free"}: the memory '${name}' points to${where(v)} was freed before this line.`, ptr, c);
+    }
+  }
+  for (const { arg, v, statuses, notHeap } of e.frees.values()) {
+    const name = arg.text.replace(/\s+/g, " ");
+    if (notHeap) {
+      add(BAD_FREE_RULE, `Invalid free: '${name}' is ${notHeap}, not memory from malloc(); free() on it is undefined behavior.`, arg, "definite");
+      continue;
+    }
+    const c = freedCertainty(statuses, v);
+    if (c) {
+      add(DOUBLE_FREE_RULE, `${c === "definite" ? "Double free" : "Possible double free"}: the memory '${name}' points to${where(v)} was already freed. Set the pointer to NULL after free().`, arg, c);
+    }
+  }
+  for (const { at, info, maybe } of e.leaks.values()) {
+    const what = info ? `memory from ${info.what} at line ${info.line}` : "allocated memory";
+    const how = at.type === "return_statement" ? "returns here" : "ends";
+    add(MEMORY_LEAK_RULE, `${maybe ? "Possible memory leak" : "Memory leak"}: the ${what} is not freed and no pointer to it is kept when the function ${how}.`, at, maybe ? "possible" : "definite");
+  }
+  for (const { at, v, length, array } of e.offsets.values()) {
+    const high = v.hi > length && !v.wh;
+    const low = v.lo < 0 && !v.wl;
+    if (high || low) {
+      const always = (high && v.lo > length && !v.wl) || (low && v.hi < 0 && !v.wh);
+      const range = `[${fmt(v.lo)}, ${fmt(v.hi)}]`;
+      add(POINTER_ARITH_RULE, `${always ? "Pointer out of bounds" : "Possible pointer out of bounds"}: '${at.text.replace(/\s+/g, " ")}' can be element ${range} of '${array}', which has ${length} elements (a pointer may go from 0 to one past the end, ${length}).`, at, always ? "definite" : "possible");
+    }
+  }
+  for (const { at, size, element, bytes, constant } of e.sizes.values()) {
+    const fn = at.childForFieldName("function")?.text ?? "the allocation";
+    add(ALLOC_SIZE_RULE, `Allocation size: ${fn}(${size.text.replace(/\s+/g, " ")}) counts bytes, but the memory holds ${element} values of ${bytes} bytes each; multiply by sizeof(${element}).`, size, constant !== undefined ? "definite" : "possible");
+  }
+  for (const { at, name } of e.sizeofs.values()) {
+    add(SIZEOF_POINTER_RULE, `'${at.text}' is the size of the pointer '${name}', not of the memory it points to; use the size of the object (sizeof(*${name}), or the element size times the count).`, at, "definite");
+  }
+}
+
+/** The inner block a local is declared in, or undefined when it lives for the whole function (or is declared twice). */
+function innerScopeOf(fn: Node, name: string): Node | undefined {
+  const body = fn.childForFieldName("body");
+  const decls = fn.descendantsOfType("declaration").filter((d): d is Node =>
+    d !== null && d.childrenForFieldName("declarator").some((x) => x !== null && declaredName(x) === name)
+  );
+  if (decls.length !== 1) {
+    return undefined;
+  }
+  const scope = decls[0].parent;
+  return scope && scope.type === "compound_statement" && scope.id !== body?.id ? scope : undefined;
+}
+
+function declaredName(d: Node): string | undefined {
+  for (let n: Node | null = d; n; n = n.childForFieldName("declarator")) {
+    if (n.type === "identifier") {
+      return n.text;
+    }
+  }
+  return undefined;
 }
 
 /** x++ / x-- / x += k / x -= k with a constant k: a counter step. Accumulating values (s += x) often wraps on purpose. */

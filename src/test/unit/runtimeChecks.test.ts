@@ -24,8 +24,14 @@ describe("checks/run-time and coding rules (markers)", () => {
 
   after(() => parser.dispose());
 
-  it("matches every marker in tests/samples/runtime_checks.c", () => {
-    const file = path.join(SAMPLES, "runtime_checks.c");
+  for (const sample of ["runtime_checks.c", "memory_checks.c"]) {
+    it(`matches every marker in tests/samples/${sample}`, () => {
+      checkMarkers(sample);
+    });
+  }
+
+  function checkMarkers(sample: string): void {
+    const file = path.join(SAMPLES, sample);
     const text = fs.readFileSync(file, "utf8");
     const findings = analyzer.analyze(file, text);
     const problems: string[] = [];
@@ -51,7 +57,7 @@ describe("checks/run-time and coding rules (markers)", () => {
       }
     }
     assert.deepStrictEqual(problems, []);
-  });
+  }
 
   it("names the source of a NULL and the array length in messages", () => {
     const file = path.join(SAMPLES, "runtime_checks.c");

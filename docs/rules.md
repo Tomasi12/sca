@@ -303,6 +303,280 @@ int *make(void)
 }
 ```
 
+## Memory lifetime
+
+| Rule | What it finds | Default |
+|---|---|---|
+| [`runtime-bugfinder:memory-leak`](#runtime-bugfindermemory-leak) | The function returns (or ends) while it still owns memory it allocated, and no pointer to it is kept. | on |
+| [`runtime-bugfinder:double-free`](#runtime-bugfinderdouble-free) | free() is called on memory that was already freed. | on |
+| [`runtime-bugfinder:use-after-free`](#runtime-bugfinderuse-after-free) | Memory is read or written through a pointer after it was freed. | on |
+| [`runtime-bugfinder:bad-free`](#runtime-bugfinderbad-free) | free() is called on an array, the address of a variable or a string literal. | on |
+| [`runtime-bugfinder:dangling-pointer`](#runtime-bugfinderdangling-pointer) | A pointer to a local array is used after the block that declares the array has ended. | on |
+| [`runtime-bugfinder:unchecked-alloc`](#runtime-bugfinderunchecked-alloc) | The result of malloc(), calloc() or realloc() is used without testing it against NULL. | on |
+| [`runtime-bugfinder:alloc-size`](#runtime-bugfinderalloc-size) | malloc(n) is stored as a pointer to values wider than a byte, but n is not multiplied by the element size. | on |
+| [`runtime-bugfinder:sizeof-pointer`](#runtime-bugfindersizeof-pointer) | sizeof(p) of a pointer p is used as the size of the memory p points to (memset, memcpy, malloc, ...). | on |
+| [`runtime-bugfinder:pointer-arith`](#runtime-bugfinderpointer-arith) | Adding to (or subtracting from) a pointer into an array gives a pointer before its start or more than one past its end. | on |
+
+### runtime-bugfinder:memory-leak
+
+**Memory leak.** The function returns (or ends) while it still owns memory it allocated, and no pointer to it is kept.
+
+*Why:* The memory can never be freed again. In a long-running program each leak shrinks the heap until an allocation fails.
+
+*Fix:* Free the memory on every path that does not hand it on, or store it where it is freed later.
+
+```c
+/* breaks the rule */
+int sum(int n)
+{
+    int *buf = malloc(n * sizeof(int));
+    if (buf == 0) {
+        return 0;
+    }
+    buf[0] = n;
+    return buf[0];
+}
+
+/* follows the rule */
+int sum(int n)
+{
+    int *buf = malloc(n * sizeof(int));
+    int r;
+    if (buf == 0) {
+        return 0;
+    }
+    buf[0] = n;
+    r = buf[0];
+    free(buf);
+    return r;
+}
+```
+
+### runtime-bugfinder:double-free
+
+**Double free.** free() is called on memory that was already freed.
+
+*Why:* Freeing twice corrupts the heap's bookkeeping; later allocations can return memory that is still in use.
+
+*Fix:* Set the pointer to NULL right after free() (free(NULL) does nothing), or make sure only one owner frees it.
+
+```c
+/* breaks the rule */
+void twice(void)
+{
+    char *p = malloc(16);
+    free(p);
+    free(p);
+}
+
+/* follows the rule */
+void twice(void)
+{
+    char *p = malloc(16);
+    free(p);
+    p = 0;
+    free(p);
+}
+```
+
+### runtime-bugfinder:use-after-free
+
+**Use after free.** Memory is read or written through a pointer after it was freed.
+
+*Why:* Freed memory belongs to the allocator again: it may already hold other data, so the read gives garbage and the write corrupts it.
+
+*Fix:* Copy what you still need before free(), and free the memory last.
+
+```c
+/* breaks the rule */
+int last(void)
+{
+    int *p = malloc(sizeof(int));
+    if (p == 0) {
+        return 0;
+    }
+    *p = 1;
+    free(p);
+    return *p;
+}
+
+/* follows the rule */
+int last(void)
+{
+    int *p = malloc(sizeof(int));
+    int v;
+    if (p == 0) {
+        return 0;
+    }
+    *p = 1;
+    v = *p;
+    free(p);
+    return v;
+}
+```
+
+### runtime-bugfinder:bad-free
+
+**Free of memory not from malloc.** free() is called on an array, the address of a variable or a string literal.
+
+*Why:* free() only accepts pointers that malloc(), calloc() or realloc() returned; anything else corrupts the heap.
+
+*Fix:* Only free what was allocated; static and local objects need no free().
+
+```c
+/* breaks the rule */
+static char pool[32];
+
+void release(void)
+{
+    free(pool);
+}
+
+/* follows the rule */
+static char *pool;
+
+void release(void)
+{
+    free(pool);
+    pool = 0;
+}
+```
+
+### runtime-bugfinder:dangling-pointer
+
+**Dangling pointer to a local array.** A pointer to a local array is used after the block that declares the array has ended.
+
+*Why:* The array's memory is reused once its block ends, so the pointer reads whatever is there now.
+
+*Fix:* Declare the array in the outer block, or make it static.
+
+```c
+/* breaks the rule */
+int pick(int mode)
+{
+    const int *t = 0;
+    if (mode != 0) {
+        int local[2] = {1, 2};
+        t = local;
+    }
+    return (t != 0) ? t[1] : 0;
+}
+
+/* follows the rule */
+int pick(int mode)
+{
+    const int *t = 0;
+    if (mode != 0) {
+        static const int local[2] = {1, 2};
+        t = local;
+    }
+    return (t != 0) ? t[1] : 0;
+}
+```
+
+### runtime-bugfinder:unchecked-alloc
+
+**Allocation result not checked.** The result of malloc(), calloc() or realloc() is used without testing it against NULL.
+
+*Why:* Allocations fail when memory runs out; the NULL result is then dereferenced.
+
+*Fix:* Test the pointer before the first use and handle the failure.
+
+```c
+/* breaks the rule */
+int *make(void)
+{
+    int *p = malloc(sizeof(int));
+    *p = 0;
+    return p;
+}
+
+/* follows the rule */
+int *make(void)
+{
+    int *p = malloc(sizeof(int));
+    if (p != 0) {
+        *p = 0;
+    }
+    return p;
+}
+```
+
+### runtime-bugfinder:alloc-size
+
+**Allocation size not in elements.** malloc(n) is stored as a pointer to values wider than a byte, but n is not multiplied by the element size.
+
+*Why:* malloc() counts bytes. Allocating n bytes for n 16-bit values gives half the memory, and writing the last values overflows the block.
+
+*Fix:* Multiply the count by sizeof the element: malloc(n * sizeof(*p)).
+
+```c
+/* breaks the rule */
+unsigned short *table(unsigned int n)
+{
+    unsigned short *t = (unsigned short *)malloc(n);
+    return t;
+}
+
+/* follows the rule */
+unsigned short *table(unsigned int n)
+{
+    unsigned short *t = (unsigned short *)malloc(n * sizeof(unsigned short));
+    return t;
+}
+```
+
+### runtime-bugfinder:sizeof-pointer
+
+**sizeof of a pointer used as a buffer size.** sizeof(p) of a pointer p is used as the size of the memory p points to (memset, memcpy, malloc, ...).
+
+*Why:* sizeof(p) is the size of the pointer itself (4 or 8 bytes), not of the table or buffer, so only part of it is cleared or copied.
+
+*Fix:* Use the object's size: sizeof(*p) times the element count, or sizeof of the array itself.
+
+```c
+/* breaks the rule */
+void clear(int *table)
+{
+    memset(table, 0, sizeof(table));
+}
+
+/* follows the rule */
+void clear(int *table, unsigned int n)
+{
+    memset(table, 0, n * sizeof(*table));
+}
+```
+
+### runtime-bugfinder:pointer-arith
+
+**Pointer arithmetic out of bounds.** Adding to (or subtracting from) a pointer into an array gives a pointer before its start or more than one past its end.
+
+*Why:* Such a pointer is undefined behavior even before it is dereferenced, and any use of it reads or writes outside the array.
+
+*Fix:* Check the offset against the array length before computing the pointer.
+
+```c
+/* breaks the rule */
+static char line[16];
+
+const char *after(unsigned int n)
+{
+    return line + n;
+}
+
+/* follows the rule */
+static char line[16];
+
+const char *after(unsigned int n)
+{
+    if (n > 16U) {
+        n = 16U;
+    }
+    return line + n;
+}
+```
+
 ## Expressions
 
 | Rule | What it finds | Default |

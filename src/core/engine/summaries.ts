@@ -30,7 +30,8 @@ type Mode = "check" | "lazy" | "stores" | "summary";
 
 const LAZY = "(not looked up yet)";
 const LAZY_RESULT: Value = { lo: -Infinity, hi: Infinity, kind: "int", init: "yes", zero: LAZY };
-const LAZY_POINTER: Value = { lo: 0, hi: 1, kind: "ptr", init: "yes", zero: LAZY };
+// "fresh": the cheap pass treats every pointer result as new memory (more leak findings, never fewer).
+const LAZY_POINTER: Value = { lo: 0, hi: 1, kind: "ptr", init: "yes", zero: LAZY, heap: "fresh" };
 
 /** Node types collected by the one walk over the file (each descendantsOfType call is a full walk). */
 const INDEXED = [

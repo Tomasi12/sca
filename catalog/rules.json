@@ -113,6 +113,96 @@
       "fix": "Return the value, use a static or caller-provided buffer instead."
     },
     {
+      "id": "runtime-bugfinder:memory-leak",
+      "title": "Memory leak",
+      "kind": "run-time",
+      "group": "Memory lifetime",
+      "enabledByDefault": true,
+      "summary": "The function returns (or ends) while it still owns memory it allocated, and no pointer to it is kept.",
+      "rationale": "The memory can never be freed again. In a long-running program each leak shrinks the heap until an allocation fails.",
+      "fix": "Free the memory on every path that does not hand it on, or store it where it is freed later."
+    },
+    {
+      "id": "runtime-bugfinder:double-free",
+      "title": "Double free",
+      "kind": "run-time",
+      "group": "Memory lifetime",
+      "enabledByDefault": true,
+      "summary": "free() is called on memory that was already freed.",
+      "rationale": "Freeing twice corrupts the heap's bookkeeping; later allocations can return memory that is still in use.",
+      "fix": "Set the pointer to NULL right after free() (free(NULL) does nothing), or make sure only one owner frees it."
+    },
+    {
+      "id": "runtime-bugfinder:use-after-free",
+      "title": "Use after free",
+      "kind": "run-time",
+      "group": "Memory lifetime",
+      "enabledByDefault": true,
+      "summary": "Memory is read or written through a pointer after it was freed.",
+      "rationale": "Freed memory belongs to the allocator again: it may already hold other data, so the read gives garbage and the write corrupts it.",
+      "fix": "Copy what you still need before free(), and free the memory last."
+    },
+    {
+      "id": "runtime-bugfinder:bad-free",
+      "title": "Free of memory not from malloc",
+      "kind": "run-time",
+      "group": "Memory lifetime",
+      "enabledByDefault": true,
+      "summary": "free() is called on an array, the address of a variable or a string literal.",
+      "rationale": "free() only accepts pointers that malloc(), calloc() or realloc() returned; anything else corrupts the heap.",
+      "fix": "Only free what was allocated; static and local objects need no free()."
+    },
+    {
+      "id": "runtime-bugfinder:dangling-pointer",
+      "title": "Dangling pointer to a local array",
+      "kind": "run-time",
+      "group": "Memory lifetime",
+      "enabledByDefault": true,
+      "summary": "A pointer to a local array is used after the block that declares the array has ended.",
+      "rationale": "The array's memory is reused once its block ends, so the pointer reads whatever is there now.",
+      "fix": "Declare the array in the outer block, or make it static."
+    },
+    {
+      "id": "runtime-bugfinder:unchecked-alloc",
+      "title": "Allocation result not checked",
+      "kind": "run-time",
+      "group": "Memory lifetime",
+      "enabledByDefault": true,
+      "summary": "The result of malloc(), calloc() or realloc() is used without testing it against NULL.",
+      "rationale": "Allocations fail when memory runs out; the NULL result is then dereferenced.",
+      "fix": "Test the pointer before the first use and handle the failure."
+    },
+    {
+      "id": "runtime-bugfinder:alloc-size",
+      "title": "Allocation size not in elements",
+      "kind": "run-time",
+      "group": "Memory lifetime",
+      "enabledByDefault": true,
+      "summary": "malloc(n) is stored as a pointer to values wider than a byte, but n is not multiplied by the element size.",
+      "rationale": "malloc() counts bytes. Allocating n bytes for n 16-bit values gives half the memory, and writing the last values overflows the block.",
+      "fix": "Multiply the count by sizeof the element: malloc(n * sizeof(*p))."
+    },
+    {
+      "id": "runtime-bugfinder:sizeof-pointer",
+      "title": "sizeof of a pointer used as a buffer size",
+      "kind": "run-time",
+      "group": "Memory lifetime",
+      "enabledByDefault": true,
+      "summary": "sizeof(p) of a pointer p is used as the size of the memory p points to (memset, memcpy, malloc, ...).",
+      "rationale": "sizeof(p) is the size of the pointer itself (4 or 8 bytes), not of the table or buffer, so only part of it is cleared or copied.",
+      "fix": "Use the object's size: sizeof(*p) times the element count, or sizeof of the array itself."
+    },
+    {
+      "id": "runtime-bugfinder:pointer-arith",
+      "title": "Pointer arithmetic out of bounds",
+      "kind": "run-time",
+      "group": "Memory lifetime",
+      "enabledByDefault": true,
+      "summary": "Adding to (or subtracting from) a pointer into an array gives a pointer before its start or more than one past its end.",
+      "rationale": "Such a pointer is undefined behavior even before it is dereferenced, and any use of it reads or writes outside the array.",
+      "fix": "Check the offset against the array length before computing the pointer."
+    },
+    {
       "id": "sca-own:float-equality",
       "title": "Floating-point equality",
       "kind": "coding-rule",

@@ -23,6 +23,7 @@ import {
   exact,
   isExact,
   join,
+  noHeap,
   ofType,
   range,
   reshape,
@@ -80,7 +81,33 @@ export interface Observer {
   branch?(cond: Node, truth: boolean, feasible: boolean): void;
   /** A direct call with the argument values. */
   call?(at: Node, name: string, args: readonly Value[]): void;
+  /** *p, p->f, p[i] through a pointer to a known memory block, with the block's status (undefined: not tracked). */
+  blockUse?(at: Node, pointer: Node, value: Value, status: BlockStatus | undefined): void;
+  /** free(p): the block's status before the call, and why the argument is not heap memory (when it is not). */
+  release?(at: Node, arg: Node, value: Value, status: BlockStatus | undefined, notHeap: string | undefined): void;
+  /** The function ends here while it still owns a block it allocated (nobody else has a pointer to it). */
+  leak?(at: Node, block: string, info: BlockInfo | undefined, maybe: boolean): void;
+  /** Pointer arithmetic on an array (`a + n`, `&a[i] + n`): the element offset of the result and the array length. */
+  pointerOffset?(at: Node, offset: Value, length: number, array: string): void;
+  /** An allocation for `element` values (`bytes` each) whose size is not a multiple of the element size. */
+  allocSize?(at: Node, size: Node, element: string, bytes: number, constant: number | undefined): void;
+  /** `sizeof(p)` of the pointer p, used as the size of the memory p points to. */
+  pointerSizeof?(at: Node, sizeofNode: Node, name: string): void;
 }
+
+/** Where a memory block was allocated. */
+export interface BlockInfo {
+  readonly what: string;
+  readonly line: number;
+}
+
+/** Block prefix of a local array (its address dies when its block ends). */
+export const SCOPE_BLOCK = "scope:";
+
+const ALLOC = /^(malloc|calloc|realloc|strdup|strndup|aligned_alloc)$/;
+/** Library functions that neither keep a pointer argument nor change static objects. */
+const PURE_LIB =
+  /^(memset|memcpy|memmove|memcmp|memchr|strlen|strnlen|strcmp|strncmp|strcpy|strncpy|strcat|strncat|strchr|strrchr|strstr|printf|fprintf|sprintf|snprintf|vsnprintf|puts|fputs|putchar|abs|labs|fabs|fabsf|sqrt|sqrtf|__builtin_memcpy|__builtin_memset|__builtin_memmove)$/;
 
 export interface Budget {
   /** Maximum number of block visits while solving one function. */
@@ -118,21 +145,66 @@ function dropSums(st: State, name: string): void {
   }
 }
 
+/**
+ * State of a memory block: allocated here and still owned, freed, freed on some paths only ("maybe"),
+ * or handed to someone else (stored in an object, passed to a function, returned): "escaped".
+ */
+export type BlockStatus = "alloc" | "freed" | "maybe" | "escaped";
+
+function joinStatus(a: BlockStatus, b: BlockStatus): BlockStatus {
+  if (a === b) {
+    return a;
+  }
+  return a === "escaped" || b === "escaped" ? "escaped" : "maybe";
+}
+
+/** Block prefix of "whatever the static pointer g held when the function started". */
+export const ENTRY_BLOCK = "@";
+
 /** Abstract state: one value per tracked variable, or dead (this point cannot be reached). */
 export class State {
   constructor(
     readonly vars: Map<string, Value> = new Map(),
-    public dead = false
+    public dead = false,
+    /** Status of the memory blocks this function allocated or freed. */
+    readonly blocks: Map<string, BlockStatus> = new Map(),
+    /** Static pointers assigned in this function: which block they point to now. */
+    readonly statics: Map<string, Value> = new Map()
   ) {}
 
   copy(): State {
-    return new State(new Map(this.vars), this.dead);
+    return new State(new Map(this.vars), this.dead, new Map(this.blocks), new Map(this.statics));
   }
 
   assign(other: State): void {
     this.vars.clear();
     other.vars.forEach((v, k) => this.vars.set(k, v));
+    this.blocks.clear();
+    other.blocks.forEach((v, k) => this.blocks.set(k, v));
+    this.statics.clear();
+    other.statics.forEach((v, k) => this.statics.set(k, v));
     this.dead = other.dead;
+  }
+
+  /** True when some variable or static pointer still points to the block. */
+  holds(block: string): boolean {
+    if (block.startsWith(ENTRY_BLOCK)) {
+      const s = this.statics.get(block.slice(ENTRY_BLOCK.length));
+      if (!s || s.heap === block) {
+        return true;
+      }
+    }
+    for (const v of this.vars.values()) {
+      if (v.heap === block) {
+        return true;
+      }
+    }
+    for (const v of this.statics.values()) {
+      if (v.heap === block) {
+        return true;
+      }
+    }
+    return false;
   }
 
   static join(a: State, b: State): State {
@@ -151,15 +223,41 @@ export class State {
         out.vars.set(k, v);
       }
     });
+    a.statics.forEach((v, k) => {
+      const w = b.statics.get(k);
+      if (w) {
+        out.statics.set(k, join(v, w));
+      }
+    });
+    // A block nobody points to any more on one path does not matter on that path.
+    for (const k of new Set([...a.blocks.keys(), ...b.blocks.keys()])) {
+      const x = a.holds(k) ? a.blocks.get(k) : undefined;
+      const y = b.holds(k) ? b.blocks.get(k) : undefined;
+      const s = x && y ? joinStatus(x, y) : x ?? y;
+      if (s) {
+        out.blocks.set(k, s);
+      }
+    }
     return out;
   }
 
   equals(other: State): boolean {
-    if (this.dead !== other.dead || this.vars.size !== other.vars.size) {
+    if (this.dead !== other.dead || this.vars.size !== other.vars.size || this.blocks.size !== other.blocks.size || this.statics.size !== other.statics.size) {
       return false;
     }
     for (const [k, v] of this.vars) {
       const w = other.vars.get(k);
+      if (!w || !equal(v, w)) {
+        return false;
+      }
+    }
+    for (const [k, v] of this.blocks) {
+      if (other.blocks.get(k) !== v) {
+        return false;
+      }
+    }
+    for (const [k, v] of this.statics) {
+      const w = other.statics.get(k);
       if (!w || !equal(v, w)) {
         return false;
       }
@@ -178,6 +276,8 @@ export class FunctionModel {
   readonly declTypes = new Map<string, CType>();
   /** Locals with automatic storage (not static, not extern, not parameters): their address dies with the call. */
   readonly autoLocals = new Set<string>();
+  /** Parameter names (an array parameter is a pointer). */
+  readonly params = new Set<string>();
 
   constructor(
     readonly fn: Node,
@@ -217,6 +317,7 @@ export class FunctionModel {
         }
       }
       if (found) {
+        this.params.add(found.name);
         seen.set(found.name, (seen.get(found.name) ?? 0) + 1);
         if (found.type) {
           candidates.push({ name: found.name, type: found.type, param: true, index });
@@ -323,6 +424,8 @@ export class FunctionAnalysis {
   private inStates: (State | undefined)[] = [];
   private observer: Observer | undefined;
   outcome: Outcome | undefined;
+  /** Where each block allocated in this function comes from. */
+  readonly blockInfo = new Map<string, BlockInfo>();
 
   constructor(
     readonly cfg: Cfg,
@@ -399,6 +502,7 @@ export class FunctionAnalysis {
       return;
     }
     this.observer = observer;
+    const end = field(this.cfg.fn, "body")?.lastChild ?? this.cfg.fn;
     try {
       this.cfg.blocks.forEach((b, id) => {
         const s = this.inStates[id];
@@ -406,6 +510,11 @@ export class FunctionAnalysis {
           return;
         }
         const out = this.runBlock(id, s.copy());
+        // Falling off the end of the function (no return statement): owned blocks are lost here.
+        const last = b.items[b.items.length - 1];
+        if (!out.dead && b.succ.some((e) => e.to === this.cfg.exit) && last?.kind !== "return" && last?.node.type !== "throw_statement") {
+          this.leaks(end, out);
+        }
         this.edgeStates(b.succ, out);
       });
     } finally {
@@ -415,7 +524,7 @@ export class FunctionAnalysis {
 
   private widenStates(old: State, next: State): State {
     const j = State.join(old, next);
-    const out = new State();
+    const out = new State(new Map(), false, j.blocks, j.statics);
     j.vars.forEach((v, k) => {
       const o = old.vars.get(k);
       const info = this.model.tracked.get(k);
@@ -441,7 +550,13 @@ export class FunctionAnalysis {
         v = convert(v, this.model.returnType);
       }
       if (!st.dead) {
-        this.observer?.ret?.(v, item.node);
+        // A returned block that this function allocated and still owns is new memory for the caller.
+        const fresh = v?.heap !== undefined && !v.hm && st.blocks.get(v.heap) === "alloc";
+        this.leaks(item.node, st, v?.heap);
+        if (v) {
+          this.escape(v, st);
+        }
+        this.observer?.ret?.(v && !fresh ? noHeap(v) : v, item.node);
       }
       return;
     }
@@ -471,6 +586,8 @@ export class FunctionAnalysis {
         const info = name ? this.model.tracked.get(name) : undefined;
         if (info && value?.type !== "initializer_list" && !st.dead) {
           st.vars.set(info.name, { ...convert(v, info.type), init: "yes" });
+        } else if (!st.dead) {
+          this.escape(v, st); // kept in something the engine does not track
         }
       } else {
         const name = nameOfDeclarator(d);
@@ -586,6 +703,10 @@ export class FunctionAnalysis {
       return v;
     }
     if (this.model.locals.has(name)) {
+      // A local array used as a pointer: points to memory that dies when its block ends.
+      if (this.model.autoLocals.has(name) && this.model.declTypes.get(name)?.k === "array") {
+        return { ...unknown("ptr"), heap: SCOPE_BLOCK + name };
+      }
       return unknown();
     }
     if (name === "NULL" || name === "nullptr") {
@@ -600,9 +721,52 @@ export class FunctionAnalysis {
       return exact(e, "int", e === 0 ? `the constant 0 (${name})` : undefined);
     }
     if (this.env.isStaticObject(name)) {
-      return this.typed(node, this.env.globalRead(name) ?? unknown());
+      return this.staticPointer(name, node, this.typed(node, this.env.globalRead(name) ?? unknown()), st);
     }
     return this.typed(node, unknown());
+  }
+
+  /** A read of a static pointer: which block it points to (what this function stored, or what it held at the start). */
+  private staticPointer(name: string, node: Node, v: Value, st: State): Value {
+    if (this.typing.scalar(node)?.kind !== "ptr") {
+      return v;
+    }
+    const s = st.statics.get(name);
+    if (!s) {
+      return { ...noHeap(v), heap: ENTRY_BLOCK + name };
+    }
+    return s.heap !== undefined ? { ...noHeap(v), heap: s.heap, ...(s.hm ? { hm: true as const } : {}) } : noHeap(v);
+  }
+
+  /** The block was handed to something the engine does not follow: it is not this function's to free any more. */
+  private escape(v: Value, st: State): void {
+    const s = v.heap !== undefined ? st.blocks.get(v.heap) : undefined;
+    if (v.heap !== undefined && (s === "alloc" || s === "maybe")) {
+      st.blocks.set(v.heap, "escaped");
+    }
+  }
+
+  /** Reports blocks this function allocated and still owns at a return (or at the end of the function). */
+  private leaks(at: Node, st: State, returned?: string): void {
+    if (!this.observer?.leak) {
+      return;
+    }
+    for (const [block, status] of st.blocks) {
+      if (status !== "alloc" || block === returned || block.startsWith(ENTRY_BLOCK)) {
+        continue;
+      }
+      let isNull = false;
+      let sure = false;
+      for (const v of st.vars.values()) {
+        if (v.heap === block) {
+          isNull ||= v.hi === 0; // the allocation failed on this path: nothing to free
+          sure ||= !v.hm;
+        }
+      }
+      if (!isNull) {
+        this.observer.leak(at, block, this.blockInfo.get(block), !sure && [...st.vars.values()].some((v) => v.heap === block));
+      }
+    }
   }
 
   /** An unknown value still has its declared type's range (a u8 global is 0..255); the bounds stay unbacked. */
@@ -697,6 +861,9 @@ export class FunctionAnalysis {
       return canTrue && canFalse ? range(0, 1) : canTrue ? exact(1) : exact(0);
     }
     if (ARITH.has(op)) {
+      if ((op === "+" || op === "-") && this.observer?.pointerOffset && (a.kind === "ptr" || b.kind === "ptr" || this.isPointer(left) || this.isPointer(right)) && this.outermostSum(node)) {
+        this.pointerArith(node, st);
+      }
       if (a.kind === "ptr" || b.kind === "ptr") {
         // Pointer arithmetic: a valid pointer stays valid (going out of bounds is another check's job).
         const p = a.kind === "ptr" ? a : b;
@@ -712,6 +879,87 @@ export class FunctionAnalysis {
       return r;
     }
     return unknown();
+  }
+
+  private isPointer(n: Node): boolean {
+    const t = this.env.decls.resolve(this.typing.of(n));
+    return t?.k === "ptr" || t?.k === "array";
+  }
+
+  /** The node is not itself an operand of a larger `p + n` / `p - n`. */
+  private outermostSum(node: Node): boolean {
+    let p = node.parent;
+    while (p?.type === "parenthesized_expression") {
+      p = p.parent;
+    }
+    const op = p?.type === "binary_expression" ? fieldOpt(p, "operator")?.type : undefined;
+    return !(p && (op === "+" || op === "-") && this.isPointer(p));
+  }
+
+  /** `a + i + 1`, `&a[k] + n - 1`: the element offset from the start of the array `a`, if its length is known. */
+  private pointerArith(node: Node, st: State): void {
+    const terms: { node: Node; sign: 1 | -1 }[] = [];
+    let base: Node | undefined;
+    const walk = (n: Node, sign: 1 | -1): boolean => {
+      const m = stripParens(n);
+      const op = m.type === "binary_expression" ? fieldOpt(m, "operator")?.type : undefined;
+      const l = op ? field(m, "left") : null;
+      const r = op ? field(m, "right") : null;
+      if (l && r && (op === "+" || op === "-")) {
+        if (this.isPointer(l)) {
+          if (op === "-" && this.isPointer(r)) {
+            return false; // p - q: a distance, not a pointer
+          }
+          terms.push({ node: r, sign: op === "-" ? -sign as 1 | -1 : sign });
+          return walk(l, sign);
+        }
+        if (op === "+" && this.isPointer(r)) {
+          terms.push({ node: l, sign });
+          return walk(r, sign);
+        }
+      }
+      base = m;
+      return sign === 1;
+    };
+    if (!walk(node, 1) || !base || terms.length === 0) {
+      return;
+    }
+    let array: Node | undefined;
+    let offset: Value = exact(0);
+    if (base.type === "identifier") {
+      array = base;
+    } else if (base.type === "pointer_expression" && fieldOpt(base, "operator")?.type === "&") {
+      const sub = field(base, "argument");
+      const a = sub?.type === "subscript_expression" ? field(sub, "argument") : null;
+      const i = sub?.type === "subscript_expression" ? field(sub, "index") : null;
+      if (!a || !i) {
+        return;
+      }
+      array = a;
+      offset = this.quietEval(i, st);
+    }
+    if (!array || (array.type === "identifier" && this.model.params.has(text(array)))) {
+      return;
+    }
+    const length = this.env.decls.arrayLength(this.typing.of(array));
+    if (length === undefined) {
+      return;
+    }
+    for (const t of terms) {
+      offset = arith(t.sign === 1 ? "+" : "-", offset, this.quietEval(t.node, st));
+    }
+    this.observer?.pointerOffset?.(node, offset, length, text(array));
+  }
+
+  /** Value of an expression without side effects on `st` and without reporting events. */
+  private quietEval(n: Node, st: State): Value {
+    const saved = this.observer;
+    this.observer = undefined;
+    try {
+      return this.eval(n, st.copy());
+    } finally {
+      this.observer = saved;
+    }
   }
 
   private shiftEvent(node: Node, left: Node, amount: Value): void {
@@ -829,6 +1077,28 @@ export class FunctionAnalysis {
     if (name && !st.dead) {
       this.observer?.call?.(node, name, values);
     }
+    if (name && !st.dead && !this.model.locals.has(name)) {
+      this.pointerSizeofs(node, name, args);
+      if (ALLOC.test(name)) {
+        return this.allocate(node, name, args, values, st);
+      }
+      if (name === "free") {
+        if (args[0]) {
+          this.release(node, args[0], values[0], st);
+        }
+        return unknown();
+      }
+      if (!PURE_LIB.test(name)) {
+        // The callee may keep a pointer argument and may change static pointers.
+        values.forEach((v) => this.escape(v, st));
+        st.statics.clear();
+        for (const k of [...st.blocks.keys()]) {
+          if (k.startsWith(ENTRY_BLOCK)) {
+            st.blocks.delete(k);
+          }
+        }
+      }
+    }
     if (name && /^(memcpy|memmove|memset|__builtin_memcpy|__builtin_memset)$/.test(name) && args.length >= 3 && !st.dead) {
       this.blockExtent(node, name, args, values[2], st);
     }
@@ -858,9 +1128,138 @@ export class FunctionAnalysis {
       }
     }
     if (name && !this.model.locals.has(name)) {
-      return this.typed(node, this.env.callResult(name) ?? unknown());
+      const r = this.env.callResult(name);
+      if (r?.heap !== undefined && !r.hm && !st.dead) {
+        // The callee returns memory it allocated: the caller owns it now.
+        const block = `call:${node.id}:${name}`;
+        this.blockInfo.set(block, { what: `${name}()`, line: node.startPosition.row + 1 });
+        st.blocks.set(block, "alloc");
+        return { ...noHeap(this.typed(node, r)), heap: block };
+      }
+      return this.typed(node, r ? noHeap(r) : unknown());
     }
     return unknown();
+  }
+
+  private allocate(node: Node, name: string, args: readonly Node[], values: readonly Value[], st: State): Value {
+    const block = `alloc:${node.id}`;
+    this.blockInfo.set(block, { what: `${name}()`, line: node.startPosition.row + 1 });
+    if (name === "realloc" && values[0]) {
+      this.escape(values[0], st);
+    }
+    st.blocks.set(block, "alloc");
+    this.allocSize(node, name, args);
+    return { ...range(0, 1, "ptr", `${name}() returns NULL when no memory is left`), heap: block };
+  }
+
+  /** free(p): reports the call, then marks the block freed. */
+  private release(node: Node, arg: Node, v: Value | undefined, st: State): void {
+    if (!v) {
+      return;
+    }
+    const status = v.heap !== undefined ? st.blocks.get(v.heap) : undefined;
+    this.observer?.release?.(node, arg, v, status, this.notHeap(arg, v));
+    if (v.heap !== undefined && !v.heap.startsWith(SCOPE_BLOCK) && v.hi !== 0) {
+      st.blocks.set(v.heap, v.hm && status !== "freed" ? "maybe" : "freed");
+    }
+  }
+
+  /** Why the argument of free() is not memory from malloc (an array, an address, a string), if we can tell. */
+  private notHeap(arg: Node, v: Value): string | undefined {
+    const n = stripCasts(arg);
+    if (n.type === "string_literal" || n.type === "concatenated_string") {
+      return "a string literal";
+    }
+    if (n.type === "pointer_expression" && fieldOpt(n, "operator")?.type === "&") {
+      return `the address of '${text(field(n, "argument") ?? n)}'`;
+    }
+    if (n.type === "identifier" && !this.model.params.has(text(n)) && this.env.decls.resolve(this.typing.of(n))?.k === "array") {
+      return `the array '${text(n)}'`;
+    }
+    if (v.base !== undefined) {
+      return `a pointer into '${v.base}'`;
+    }
+    if (v.heap?.startsWith(SCOPE_BLOCK) && !v.hm) {
+      return `a pointer to the local array '${v.heap.slice(SCOPE_BLOCK.length)}'`;
+    }
+    return undefined;
+  }
+
+  /** The type a call result is stored as: `(T *)malloc(...)`, `T *p = malloc(...)`, `p = malloc(...)`. */
+  private allocTarget(call: Node): { to: CType; name?: string } | undefined {
+    let p = call.parent;
+    while (p?.type === "parenthesized_expression") {
+      p = p.parent;
+    }
+    const pointee = (t: CType | undefined) => {
+      const r = this.env.decls.resolve(t);
+      return r?.k === "ptr" ? r.to : undefined;
+    };
+    if (p?.type === "cast_expression") {
+      const desc = field(p, "type");
+      const to = desc ? pointee(this.typing.descriptor(desc)) : undefined;
+      return to ? { to } : undefined;
+    }
+    if (p?.type === "init_declarator") {
+      const name = nameOfDeclarator(field(p, "declarator"));
+      const t = name ? this.model.declTypes.get(name) ?? this.env.decls.varType(name) : undefined;
+      const to = pointee(t);
+      return to ? { to, name } : undefined;
+    }
+    if (p?.type === "assignment_expression") {
+      const left = field(p, "left");
+      const to = left ? pointee(this.typing.of(left)) : undefined;
+      return to ? { to, name: left?.type === "identifier" ? text(left) : undefined } : undefined;
+    }
+    return undefined;
+  }
+
+  /** malloc(n) stored as T* where n is not a multiple of sizeof(T) (and has no sizeof in it). */
+  private allocSize(node: Node, name: string, args: readonly Node[]): void {
+    const size = name === "malloc" ? args[0] : name === "calloc" || name === "realloc" ? args[1] : undefined;
+    if (!size || !this.observer?.allocSize || size.type === "sizeof_expression" || size.descendantsOfType("sizeof_expression").length > 0) {
+      return;
+    }
+    const target = this.allocTarget(node);
+    const r = target ? this.env.decls.resolve(target.to) : undefined;
+    const bytes = target ? this.bytes(target.to, 0) : undefined;
+    if (!r || bytes === undefined || bytes <= 1 || (r.k !== "builtin" && r.k !== "named")) {
+      return;
+    }
+    const k = numericValue(size, this.env.consts);
+    if (k !== undefined && k % bytes === 0) {
+      return;
+    }
+    const element = target!.to.k === "named" || target!.to.k === "builtin" ? target!.to.name : r.name;
+    this.observer.allocSize(node, size, element, bytes, k);
+  }
+
+  /** memset(p, 0, sizeof(p)), malloc(sizeof(p)) for p = ...: the size of the pointer instead of the memory. */
+  private pointerSizeofs(node: Node, name: string, args: readonly Node[]): void {
+    if (!this.observer?.pointerSizeof) {
+      return;
+    }
+    const target = ALLOC.test(name) ? this.allocTarget(node)?.name : undefined;
+    for (const a of args) {
+      const sizes = a.type === "sizeof_expression" ? [a] : a.descendantsOfType("sizeof_expression").filter((s): s is Node => s !== null);
+      for (const s of sizes) {
+        const v = field(s, "value");
+        const desc = field(s, "type");
+        const inner = v ? stripParens(v) : undefined;
+        const nm = inner?.type === "identifier" ? text(inner) : desc && /^[A-Za-z_]\w*$/.test(text(desc).trim()) ? text(desc).trim() : undefined;
+        if (!nm || this.model.params.has(nm) === false && this.model.locals.has(nm) === false && this.env.decls.varType(nm) === undefined) {
+          continue;
+        }
+        const t = this.env.decls.resolve(this.model.declTypes.get(nm) ?? (this.model.locals.has(nm) ? undefined : this.env.decls.varType(nm)));
+        if (t?.k !== "ptr") {
+          continue;
+        }
+        const same = target === nm || args.some((o) => o !== a && stripCasts(o).type === "identifier" && text(stripCasts(o)) === nm);
+        if (same) {
+          this.observer.pointerSizeof(node, s, nm);
+        }
+      }
+    }
   }
 
   /** `a.f`, `p->f`, `a[i]`: a read through an object or a pointer. */
@@ -884,7 +1283,11 @@ export class FunctionAnalysis {
         // &a[i], &s.f, &p->f: evaluate the parts (index, pointer) for their effects and checks.
         this.accessPath(arg, st);
       }
-      return path ? { ...exact(1, "ptr"), base: path } : exact(1, "ptr");
+      if (path) {
+        return { ...exact(1, "ptr"), base: path };
+      }
+      const root = rootName(arg);
+      return root && this.model.autoLocals.has(root) ? { ...exact(1, "ptr"), heap: SCOPE_BLOCK + root } : exact(1, "ptr");
     }
     const p = this.eval(arg, st);
     this.dereferenced(node, arg, p, st);
@@ -897,10 +1300,15 @@ export class FunctionAnalysis {
       return;
     }
     this.observer?.deref?.(at, ptr, value);
+    if (value.heap !== undefined && value.hi !== 0) {
+      this.observer?.blockUse?.(at, ptr, value, st.blocks.get(value.heap));
+    }
     const name = ptr.type === "identifier" ? text(ptr) : undefined;
     const info = name ? this.model.tracked.get(name) : undefined;
     if (info && value.kind === "ptr" && value.lo === 0) {
-      st.vars.set(info.name, { ...value, lo: 1, hi: 1, zero: undefined });
+      const used: Value = { ...value, lo: 1, hi: 1, zero: undefined };
+      st.vars.set(info.name, used);
+      sameBlockNullness(st, info.name, used);
     }
   }
 
@@ -1138,7 +1546,12 @@ export class FunctionAnalysis {
     }
     if (target.kind === "global") {
       this.observer?.store?.(target.path, v, at);
+      const left = at.type === "assignment_expression" ? field(at, "left") : at.type === "update_expression" ? field(at, "argument") : null;
+      if (!target.path.includes(".") && (v.heap !== undefined || (left && this.typing.scalar(left)?.kind === "ptr"))) {
+        st.statics.set(target.path, v);
+      }
     }
+    this.escape(v, st); // stored in a static object, a field or an element: someone else may free it
     return v;
   }
 
@@ -1430,6 +1843,24 @@ export class FunctionAnalysis {
       return;
     }
     s.vars.set(info.name, withZero(next, next.zero));
+    if (v.kind === "ptr") {
+      sameBlockNullness(s, info.name, s.vars.get(info.name)!);
+    }
+  }
+}
+
+/** Copies of a pointer to the same block (`q = p`) are NULL exactly when p is: `if (p == NULL)` narrows them too. */
+function sameBlockNullness(s: State, name: string, v: Value): void {
+  if (v.heap === undefined || v.hm) {
+    return;
+  }
+  for (const [k, w] of s.vars) {
+    if (k !== name && w.heap === v.heap && !w.hm && (w.lo !== v.lo || w.hi !== v.hi)) {
+      const n = clamp(w, v.lo, v.hi);
+      if (n) {
+        s.vars.set(k, v.lo > 0 ? withZero(n, undefined) : n);
+      }
+    }
   }
 }
 
@@ -1476,6 +1907,36 @@ function stripCasts(node: Node): Node {
       return n;
     }
   }
+}
+
+function stripParens(node: Node): Node {
+  let n = node;
+  while (n.type === "parenthesized_expression") {
+    const inner = innerExpression(n);
+    if (!inner || inner.id === n.id) {
+      break;
+    }
+    n = inner;
+  }
+  return n;
+}
+
+/** The variable an object expression is part of: `x`, `x[i]`, `x.f`. */
+function rootName(node: Node): string | undefined {
+  let n: Node | null = node;
+  while (n) {
+    if (n.type === "identifier") {
+      return text(n);
+    }
+    if (n.type === "subscript_expression" || (n.type === "field_expression" && fieldOpt(n, "operator")?.type === ".")) {
+      n = field(n, "argument");
+    } else if (n.type === "parenthesized_expression") {
+      n = innerExpression(n) ?? null;
+    } else {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 function targetName(node: Node): string | undefined {

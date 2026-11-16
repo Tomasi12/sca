@@ -96,6 +96,15 @@ Click the **shield icon** in the Activity Bar to open **SCA → Issue Monitor**.
 | `runtime-bugfinder:dead-code` | an if branch that never runs; code no path reaches (after `return`, `break`, ...) | definite |
 | `runtime-bugfinder:endless-loop` | a loop whose condition is always true; a wait loop with an empty body and no timeout | definite / possible |
 | `runtime-bugfinder:stack-escape` | returning the address of a local variable | definite |
+| `runtime-bugfinder:memory-leak` | a return (or the end of the function) while the function still owns memory it allocated and no pointer to it is kept | definite / possible |
+| `runtime-bugfinder:double-free` | `free()` of memory that was already freed (on every path: definite; on some: possible) | definite / possible |
+| `runtime-bugfinder:use-after-free` | `*p`, `p->f`, `p[i]` on freed memory, also through a copy of the pointer | definite / possible |
+| `runtime-bugfinder:bad-free` | `free()` of an array, the address of a variable or a string literal | definite |
+| `runtime-bugfinder:dangling-pointer` | a pointer to a local array used after the block that declares the array has ended | definite / possible |
+| `runtime-bugfinder:unchecked-alloc` | the result of `malloc()`, `calloc()`, `realloc()`, `strdup()` used without a NULL test | possible (warning) |
+| `runtime-bugfinder:alloc-size` | `(T *)malloc(n)` where `n` is not a multiple of `sizeof(T)` and has no `sizeof` in it | definite / possible |
+| `runtime-bugfinder:sizeof-pointer` | `sizeof(p)` of a pointer used as the size of the memory `p` points to (`memset(p, 0, sizeof(p))`) | definite |
+| `runtime-bugfinder:pointer-arith` | `a + n`, `&a[i] + n` that gives a pointer before the start or more than one past the end of the array `a` | definite / possible |
 | `sca-own:switch-default` | `switch` without a `default` clause (a nested switch needs its own) | definite (warning) |
 | `sca-own:goto` | every `goto` statement | definite (warning) |
 | `sca-own:switch-fallthrough` | a case with statements that falls into the next one (no `break`; a `/* fallthrough */` comment marks it as intended) | definite (warning) |
@@ -158,7 +167,12 @@ reported there. Examples: [tests/samples/div_by_zero_cases.c](tests/samples/div_
    `break`, `continue` and `return`. The first round of a loop is kept apart ("peeled"), so "the loop ran at least once"
    and "the loop never ran" do not mix.
 2. **Values** (`value.ts`): each tracked variable has a range `[lo, hi]`, a *zero witness* (where a 0 can come from),
-   whether it is set on all paths, some, or none, and for pointers: null, not null, or maybe null.
+   whether it is set on all paths, some, or none, and for pointers: null, not null, or maybe null, and the memory
+   block they point to (an allocation in this function, what a `static` pointer held at the start, or a local array).
+   The state keeps each block's status: allocated, freed, freed on some paths, or handed on (stored in an object,
+   passed to a function, returned). Handed-on memory is never reported as leaked; a call to a function the engine does
+   not know also forgets what it knew about `static` pointers. A same-file function that returns memory it allocated
+   gives the caller a new block to own.
 3. **Solver** (`interpreter.ts`): runs the graph until nothing changes; loops are widened to the type's limits after a few
    rounds, so they always end. Conditions narrow values on each branch (`if (n > 0)` gives `n ∈ [1, max]` inside).
 4. **File summaries** (`summaries.ts`): stores to `static` objects, return values of functions in the file, and the
@@ -373,17 +387,18 @@ npm run benchmark -- ../dummy_project --json bench.json --fail-on-fp
 Categories in the key that no check covers yet are listed at the end. Which rule IDs answer which category is set in
 `CATEGORY_RULES` (`src/core/checks/index.ts`). `--fail-on-fp` returns exit code 1 when there is a false positive (for CI).
 
-Result on car-control today: **55 of 63** expected issues found in the 37 covered categories (87 %), **0 false positives**.
+Result on car-control today: **64 of 72** expected issues found in the 46 covered categories (89 %), **0 false positives**.
 Run-time: `div_zero` 5/6, `null_deref` 1/2, `uninit_var` 1/1, `uninit_ptr` 1/1, `out_of_bounds` 5/9, `overflow` 6/8,
 `uint_wrap` 1/1, `shift` 2/2, `conversion` 1/1, `dead_code` 2/2, `unreachable_code` 1/1, `non_terminating_loop` 1/1,
-`stack_escape` 1/1. Coding rules: all 27 issues in the 24 coding-rule categories found (`switch_default`, `goto` 3/3,
+`stack_escape` 1/1. Memory lifetime: all 9 found (`memory_leak`, `double_free`, `use_after_free`, `bad_free`,
+`dangling_ptr`, `unchecked_alloc`, `alloc_size`, `wrong_sizeof`, `ptr_arith`), no finding on their 8 SAFE lines. Coding rules: all 27 issues in the 24 coding-rule categories found (`switch_default`, `goto` 3/3,
 `missing_break`, `unchecked_return`, `invariant_condition` 2/2, `float_equality`, `assignment_in_condition`,
 `side_effect_in_condition`, `operator_precedence`, `missing_braces`, `empty_body`, `octal_constant`, `implicit_conversion`,
 `signed_unsigned_compare`, `signed_bitwise`, `vla`, `integer_division_in_float`, `unused_variable`, `unused_parameter`,
 `shadowing`, `missing_volatile`, `dynamic_memory`, `magic_number`, `recursion`). The 8 misses are run-time issues that need
 knowledge across files (a NULL or a 0 coming from another module) or about unknown inputs (a length from the bus, an index
-from a struct field). car-control has 87 expected issues in total; the 23 categories without a check yet (24 issues, mostly
-memory and string handling) are listed at the end of the benchmark output. Unmarked findings are mostly metrics and
+from a struct field). car-control has 87 expected issues in total; the 14 categories without a check yet (15 issues: strings
+and formats, floating point, concurrency and a few others) are listed at the end of the benchmark output. Unmarked findings are mostly metrics and
 magic numbers (car-control turns `sca-own:magic-number` on in its `.sca.json`).
 
 ## Commands (reference)

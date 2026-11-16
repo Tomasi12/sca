@@ -8,7 +8,11 @@
 //     `i <= 16`. A bound that comes from an unknown value, a loop that was widened, or a variable that was
 //     never set is "wild" (`wl` / `wh`). Checks for bounds, overflow and shifts only use backed bounds;
 //   * whether the variable is set (initialized) on all paths, on some, or on none;
-//   * for pointers, the static object they point into (`t = &tasks[i]` -> "tasks"), if known.
+//   * for pointers, the static object they point into (`t = &tasks[i]` -> "tasks"), if known;
+//   * for pointers, the memory block they point to (`heap`): an allocation (`alloc:<id>`, `call:<id>:<fn>`),
+//     whatever a static pointer held when the function started (`@g`), or a local array (`scope:x`).
+//     The block's state (allocated, freed, ...) is kept in the interpreter's State, not in the value.
+//     `hm` means "maybe": on some paths the pointer points somewhere else.
 
 import { ScalarKind, ScalarType } from "./types";
 
@@ -25,12 +29,16 @@ export interface Value {
   readonly wl?: true;
   /** The upper bound is not backed by the code. */
   readonly wh?: true;
+  /** The memory block the pointer points to (see above). */
+  readonly heap?: string;
+  /** On some paths the pointer points to another block than `heap`. */
+  readonly hm?: true;
 }
 
 type Mutable = { -readonly [K in keyof Value]?: Value[K] };
 
 /** Builds a value, leaving out unset optional fields (so values compare and print cleanly). */
-function make(lo: number, hi: number, kind: ScalarKind, init: Init, zero?: string, wl?: boolean, wh?: boolean, base?: string): Value {
+function make(lo: number, hi: number, kind: ScalarKind, init: Init, zero?: string, wl?: boolean, wh?: boolean, base?: string, heap?: string, hm?: boolean): Value {
   const v: Mutable = { lo, hi, kind, init };
   if (zero !== undefined && lo <= 0 && hi >= 0) {
     v.zero = zero;
@@ -43,6 +51,12 @@ function make(lo: number, hi: number, kind: ScalarKind, init: Init, zero?: strin
   }
   if (base !== undefined) {
     v.base = base;
+  }
+  if (heap !== undefined) {
+    v.heap = heap;
+    if (hm) {
+      v.hm = true;
+    }
   }
   return v as Value;
 }
@@ -78,12 +92,12 @@ export function withZero(v: Value, zero: string | undefined): Value {
   if (z === v.zero) {
     return v;
   }
-  return make(v.lo, v.hi, v.kind, v.init, z, v.wl, v.wh, v.base);
+  return make(v.lo, v.hi, v.kind, v.init, z, v.wl, v.wh, v.base, v.heap, v.hm);
 }
 
 /** Marks both bounds as not backed (e.g. the value of a variable that was never set). */
 export function wild(v: Value): Value {
-  return v.wl && v.wh ? v : make(v.lo, v.hi, v.kind, v.init, v.zero, true, true, v.base);
+  return v.wl && v.wh ? v : make(v.lo, v.hi, v.kind, v.init, v.zero, true, true, v.base, v.heap, v.hm);
 }
 
 /** Least upper bound of two values (paths merge). */
@@ -94,7 +108,29 @@ export function join(a: Value, b: Value): Value {
   const wl = a.lo < b.lo ? a.wl : b.lo < a.lo ? b.wl : a.wl && b.wl;
   const wh = a.hi > b.hi ? a.wh : b.hi > a.hi ? b.wh : a.wh && b.wh;
   const kind = a.kind === b.kind ? a.kind : a.kind === "float" || b.kind === "float" ? "float" : a.kind;
-  return make(lo, hi, kind, init, a.zero ?? b.zero, wl, wh, a.base !== undefined && a.base === b.base ? a.base : undefined);
+  const [heap, hm] = joinHeap(a, b);
+  return make(lo, hi, kind, init, a.zero ?? b.zero, wl, wh, a.base !== undefined && a.base === b.base ? a.base : undefined, heap, hm);
+}
+
+const isNull = (v: Value): boolean => v.lo === 0 && v.hi === 0;
+
+/** The block after a merge: kept when both sides agree or the other side is NULL; "maybe" when the other side is unknown. */
+function joinHeap(a: Value, b: Value): [string | undefined, boolean] {
+  if (a.heap === b.heap) {
+    return [a.heap, !!(a.hm || b.hm)];
+  }
+  if (a.heap !== undefined && b.heap === undefined) {
+    return [a.heap, !!a.hm || !isNull(b)];
+  }
+  if (b.heap !== undefined && a.heap === undefined) {
+    return [b.heap, !!b.hm || !isNull(a)];
+  }
+  return [undefined, false];
+}
+
+/** The same value without a memory block. */
+export function noHeap(v: Value): Value {
+  return v.heap === undefined ? v : make(v.lo, v.hi, v.kind, v.init, v.zero, v.wl, v.wh, v.base);
 }
 
 /** Like join, but bounds that keep moving jump to the type's limits (and are no longer backed), so loops end. */
@@ -104,11 +140,11 @@ export function widen(old: Value, next: Value, type: ScalarType): Value {
   const movedHi = j.hi > old.hi;
   const lo = movedLo ? (type.lo <= j.lo ? type.lo : -Infinity) : j.lo;
   const hi = movedHi ? (type.hi >= j.hi ? type.hi : Infinity) : j.hi;
-  return make(lo, hi, j.kind, j.init, j.zero, movedLo || j.wl, movedHi || j.wh, j.base);
+  return make(lo, hi, j.kind, j.init, j.zero, movedLo || j.wl, movedHi || j.wh, j.base, j.heap, j.hm);
 }
 
 export function equal(a: Value, b: Value): boolean {
-  return a.lo === b.lo && a.hi === b.hi && a.kind === b.kind && a.zero === b.zero && a.init === b.init && a.base === b.base && a.wl === b.wl && a.wh === b.wh;
+  return a.lo === b.lo && a.hi === b.hi && a.kind === b.kind && a.zero === b.zero && a.init === b.init && a.base === b.base && a.wl === b.wl && a.wh === b.wh && a.heap === b.heap && a.hm === b.hm;
 }
 
 /**
@@ -123,12 +159,12 @@ export function clamp(v: Value, lo: number, hi: number, loWild = false, hiWild =
   }
   const wl = l > v.lo ? loWild : v.wl;
   const wh = h < v.hi ? hiWild : v.wh;
-  return make(l, h, v.kind, v.init, v.zero, wl, wh, v.base);
+  return make(l, h, v.kind, v.init, v.zero, wl, wh, v.base, v.heap, v.hm);
 }
 
 /** The same value with another range (keeps init, witness, base, and the wildness of unchanged bounds). */
 export function reshape(v: Value, lo: number, hi: number): Value {
-  return make(lo, hi, v.kind, v.init, v.zero, lo === v.lo ? v.wl : false, hi === v.hi ? v.wh : false, v.base);
+  return make(lo, hi, v.kind, v.init, v.zero, lo === v.lo ? v.wl : false, hi === v.hi ? v.wh : false, v.base, v.heap, v.hm);
 }
 
 /** Converts to a declared type: out-of-range values wrap (unsigned) or are undefined (signed): full range. */
@@ -138,7 +174,9 @@ export function convert(v: Value, t: ScalarType): Value {
       return v;
     }
     // An integer turned into a pointer: 0 stays null, anything else is unknown.
-    return isExact(v, 0) ? { ...exact(0, "ptr", v.zero), init: v.init } : { ...unknown("ptr"), init: v.init };
+    // A read of a static pointer can be typed as an integer: keep the block it points to.
+    const block = v.heap !== undefined ? { heap: v.heap, ...(v.hm ? { hm: true as const } : {}) } : {};
+    return isExact(v, 0) ? { ...exact(0, "ptr", v.zero), init: v.init } : { ...unknown("ptr"), init: v.init, ...block };
   }
   if (t.kind === "float") {
     return make(v.lo, v.hi, "float", v.init, v.zero, v.wl, v.wh);
@@ -170,6 +208,9 @@ export function toText(v: Value): string {
     s = v.hi === 0 ? "null" : v.lo === 1 ? "not null" : "maybe null";
     if (v.base) {
       s += ` -> ${v.base}`;
+    }
+    if (v.heap) {
+      s += ` [${v.hm ? "maybe " : ""}${v.heap}]`;
     }
   } else {
     s = v.lo === v.hi ? n(v.lo) : `[${n(v.lo)}, ${n(v.hi)}]`;
