@@ -9,6 +9,7 @@
 import { Node } from "web-tree-sitter";
 import { ConstantLookup, numericValue } from "../checks/syntax";
 import { Assume, Cfg, Item } from "./cfg";
+import { STRING_FUNCTIONS, StringContext, stringChecks, StringIssueKind } from "./strings";
 import { applyDeclarator, CType, Declarations, specifierType } from "./declarations";
 import { Typing, widthOf } from "./typing";
 import { field, fieldOpt, named, text } from "./syntaxCache";
@@ -101,7 +102,14 @@ export interface Observer {
   enumCast?(at: Node, value: Value, values: readonly number[], typeName: string): void;
   /** A call to a function of this file that never returns and is not declared that way. */
   noReturnCall?(at: Node, name: string): void;
+  /** A problem with a string or format call (see strings.ts). */
+  stringIssue?(at: Node, kind: StringIssueKind, message: string, definite: boolean): void;
+  /** A call to a floating-point math function (exp, sqrt, log, ...) with the value of its first argument. */
+  mathCall?(at: Node, name: string, arg: Value): void;
 }
+
+/** Floating-point math functions whose argument range matters. */
+const FLOAT_MATH = /^(expf?|expl|exp2f?|sqrtf?|sqrtl|logf?|logl|log10f?|log2f?|acosf?|asinf?|powf?|fabsf?|hypotf?)$/;
 
 /** Where a memory block was allocated. */
 export interface BlockInfo {
@@ -906,7 +914,12 @@ export class FunctionAnalysis {
       if ((op === "<<" || op === ">>") && !st.dead) {
         this.shiftEvent(node, left, b);
       }
-      const r = arith(op as BinaryOp, a, b);
+      let r = arith(op as BinaryOp, a, b);
+      if (op === "*" && left.type === "identifier" && text(left) === text(right)) {
+        // x * x is never negative
+        const sq = [a.lo * a.lo, a.hi * a.hi].map((x) => (Number.isNaN(x) ? Infinity : x));
+        r = range(a.lo <= 0 && a.hi >= 0 ? 0 : Math.min(...sq), Math.max(...sq), r.kind, r.zero, false, !!(a.wl || a.wh));
+      }
       if (op === "+" || op === "-" || op === "*") {
         this.signedArith(node, r, st);
       }
@@ -1116,6 +1129,19 @@ export class FunctionAnalysis {
     }
     if (name && !st.dead && !this.model.locals.has(name)) {
       this.pointerSizeofs(node, name, args);
+      if (this.observer?.stringIssue && STRING_FUNCTIONS.test(name)) {
+        for (const i of stringChecks(this.stringContext(st), node, name, args)) {
+          this.observer.stringIssue(i.at, i.kind, i.message, i.definite);
+        }
+      }
+      const math = FLOAT_MATH.exec(name);
+      if (math) {
+        if (values[0]) {
+          this.observer?.mathCall?.(node, name, values[0]);
+        }
+        // sqrt, exp, fabs, hypot are never negative; the rest is any float
+        return /^(sqrt|exp|fabs|hypot)/.test(name) ? range(0, Infinity, "float", undefined, false, true) : unknown("float");
+      }
       if (ALLOC.test(name)) {
         return this.allocate(node, name, args, values, st);
       }
@@ -1184,6 +1210,27 @@ export class FunctionAnalysis {
       return this.typed(node, r ? noHeap(r) : unknown());
     }
     return unknown();
+  }
+
+  /** What the string and format checks may ask about this function (values without side effects). */
+  private stringContext(st: State): StringContext {
+    const fd = (() => {
+      let d: Node | null = field(this.cfg.fn, "declarator");
+      while (d && d.type !== "function_declarator") {
+        d = field(d, "declarator");
+      }
+      return d;
+    })();
+    return {
+      typeOf: (n) => this.typing.of(n),
+      scalarOf: (n) => this.typing.scalar(n),
+      resolve: (t) => this.env.decls.resolve(t),
+      arrayLength: (t) => this.env.decls.arrayLength(t),
+      bytes: (t) => this.bytes(t, 0),
+      value: (n) => this.quietEval(n, st),
+      macroBody: (n) => this.env.macroBody(n),
+      variadic: !!fd && /\.\.\./.test(field(fd, "parameters")?.text ?? ""),
+    };
   }
 
   /** `(Mode)x`: reports values outside the range of the enum's constants. */

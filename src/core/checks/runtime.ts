@@ -37,6 +37,7 @@ import { SourceContext } from "../analyzer";
 import { engineFor } from "../engine";
 import { reachableBlocks } from "../engine/cfg";
 import { BlockInfo, BlockStatus, FunctionAnalysis, SCOPE_BLOCK } from "../engine/interpreter";
+import { StringIssueKind } from "../engine/strings";
 import { ScalarType } from "../engine/types";
 import { widthOf } from "../engine/typing";
 import { join, Value } from "../engine/value";
@@ -87,10 +88,30 @@ export const BAD_FUNCTION_POINTER_RULE = "runtime-bugfinder:bad-function-pointer
 /** Function and value sanity rules (also produced by checkRuntime). */
 export const FUNCTION_RULES = [MISSING_RETURN_RULE, INVALID_ENUM_RULE, NO_RETURN_CALL_RULE, BAD_FUNCTION_POINTER_RULE];
 
+/** String and format rules, by the kind strings.ts reports. */
+export const STRING_RULE: Record<StringIssueKind, string> = {
+  "string-overflow": "runtime-bugfinder:string-overflow",
+  "missing-terminator": "runtime-bugfinder:missing-terminator",
+  "overlapping-copy": "runtime-bugfinder:overlapping-copy",
+  "format-mismatch": "runtime-bugfinder:format-mismatch",
+  "uncontrolled-format": "runtime-bugfinder:uncontrolled-format",
+};
+export const STRING_RULES = Object.values(STRING_RULE);
+
+export const FLOAT_OVERFLOW_RULE = "runtime-bugfinder:float-overflow";
+export const FLOAT_INVALID_RULE = "runtime-bugfinder:float-invalid";
+export const FLOAT_CONVERSION_RULE = "runtime-bugfinder:float-conversion";
+export const FLOAT_RULES = [FLOAT_OVERFLOW_RULE, FLOAT_INVALID_RULE, FLOAT_CONVERSION_RULE];
+
+/** Largest argument of exp-style functions before the result is infinite. */
+const EXP_LIMIT: Record<string, number> = { expf: 88.72, exp: 709.78, expl: 709.78, exp2f: 128, exp2: 1024 };
+
 /** Rules this check produces (div-zero included). */
 export const RUNTIME_RULES = [
   ...MEMORY_RULES,
   ...FUNCTION_RULES,
+  ...STRING_RULES,
+  ...FLOAT_RULES,
   DIV_ZERO_RULE,
   NULL_DEREF_RULE,
   UNINIT_RULE,
@@ -285,6 +306,8 @@ function judgeFunction(file: string, fa: FunctionAnalysis, literalZero: Readonly
   const fallOffs = new Map<number, Node>();
   const enumCasts = new Map<number, { at: Node; v: Value; values: readonly number[]; typeName: string }>();
   const noReturnCalls = new Map<number, { at: Node; name: string }>();
+  const stringIssues = new Map<string, { at: Node; kind: StringIssueKind; message: string; definite: boolean }>();
+  const mathCalls = new Map<number, { at: Node; name: string; v: Value }>();
   const merge = <K, T extends { v: Value }>(m: Map<K, T>, k: K, entry: T) => {
     const old = m.get(k);
     m.set(k, old ? { ...entry, v: join(old.v, entry.v) } : entry);
@@ -325,6 +348,12 @@ function judgeFunction(file: string, fa: FunctionAnalysis, literalZero: Readonly
     fallOff: (at) => fallOffs.set(at.id, at),
     enumCast: (at, v, values, typeName) => merge(enumCasts, at.id, { at, v, values, typeName }),
     noReturnCall: (at, name) => noReturnCalls.set(at.id, { at, name }),
+    stringIssue: (at, kind, message, definite) => {
+      const k = `${at.id}:${kind}`;
+      const old = stringIssues.get(k);
+      stringIssues.set(k, old ? { ...old, definite: old.definite && definite } : { at, kind, message, definite });
+    },
+    mathCall: (at, name, v) => merge(mathCalls, at.id, { at, name, v }),
     blockUse: (at, ptr, v, status) => {
       const old = uses.get(ptr.id);
       uses.set(ptr.id, old ? { ...old, v: join(old.v, v), statuses: old.statuses.add(status) } : { at, ptr, v, statuses: new Set([status]) });
@@ -415,6 +444,18 @@ function judgeFunction(file: string, fa: FunctionAnalysis, literalZero: Readonly
     if (to.kind !== "int" || v.kind === "ptr") {
       continue;
     }
+    if (v.kind === "float") {
+      // float -> integer: undefined when the value (after dropping the fraction) does not fit
+      const high = v.hi >= to.hi + 1 && !v.wh;
+      const low = v.lo <= to.lo - 1 && !v.wl;
+      // A float with no finite bound (any value of a float parameter) is only judged against narrow types.
+      const anyFloat = !Number.isFinite(v.lo) || !Number.isFinite(v.hi);
+      if ((high || low) && !(anyFloat && widthOf(to) >= 32)) {
+        const always = (high && v.lo >= to.hi + 1 && !v.wl) || (low && v.hi <= to.lo - 1 && !v.wh);
+        add(FLOAT_CONVERSION_RULE, `${always ? "Float value does not fit" : "Float value may not fit"} in ${to.name}: it can be [${fmt(v.lo)}, ${fmt(v.hi)}], ${to.name} holds [${fmt(to.lo)}, ${fmt(to.hi)}]; the conversion is undefined behavior.`, at, always ? "definite" : "possible");
+      }
+      continue;
+    }
     if (!Number.isFinite(v.lo) || !Number.isFinite(v.hi)) {
       continue; // e.g. a float parameter: any value; float-to-int conversion is another check
     }
@@ -468,6 +509,35 @@ function judgeFunction(file: string, fa: FunctionAnalysis, literalZero: Readonly
     if (high || low) {
       const always = (high && v.lo > max && !v.wl) || (low && v.hi < min && !v.wh);
       add(INVALID_ENUM_RULE, `${always ? "Invalid enum value" : "Possibly invalid enum value"}: the value cast to ${typeName} can be [${fmt(v.lo)}, ${fmt(v.hi)}], but its constants go from ${min} to ${max}.`, at, always ? "definite" : "possible");
+    }
+  }
+  for (const { at, kind, message, definite } of stringIssues.values()) {
+    add(STRING_RULE[kind], message, at, definite ? "definite" : "possible");
+  }
+  for (const { at, name, v } of mathCalls.values()) {
+    const arg = at.childForFieldName("arguments")?.namedChildren.find((c) => c !== null && c.type !== "comment")?.text.replace(/\s+/g, " ") ?? "the argument";
+    const r = `[${fmt(v.lo)}, ${fmt(v.hi)}]`;
+    const limit = EXP_LIMIT[name];
+    if (limit !== undefined) {
+      if (v.hi > limit && !v.wh) {
+        const always = v.lo > limit && !v.wl;
+        add(FLOAT_OVERFLOW_RULE, `${always ? "Floating-point overflow" : "Possible floating-point overflow"}: ${name}(${arg}) is infinite when the argument is above ${limit}; it can be ${r}.`, at, always ? "definite" : "possible");
+      }
+    } else if (/^sqrt/.test(name)) {
+      if (v.lo < 0 && !v.wl) {
+        const always = v.hi < 0 && !v.wh;
+        add(FLOAT_INVALID_RULE, `${always ? "Invalid operation" : "Possible invalid operation"}: ${name}() of a negative value gives NaN; '${arg}' can be ${r}.`, at, always ? "definite" : "possible");
+      }
+    } else if (/^log/.test(name)) {
+      if (v.lo <= 0 && !v.wl) {
+        const always = v.hi <= 0 && !v.wh;
+        add(FLOAT_INVALID_RULE, `${always ? "Invalid operation" : "Possible invalid operation"}: ${name}() of 0 or a negative value gives -infinity or NaN; '${arg}' can be ${r}.`, at, always ? "definite" : "possible");
+      }
+    } else if (/^(acos|asin)/.test(name)) {
+      if ((v.lo < -1 && !v.wl) || (v.hi > 1 && !v.wh)) {
+        const always = (v.hi < -1 && !v.wh) || (v.lo > 1 && !v.wl);
+        add(FLOAT_INVALID_RULE, `${always ? "Invalid operation" : "Possible invalid operation"}: ${name}() outside [-1, 1] gives NaN; '${arg}' can be ${r}.`, at, always ? "definite" : "possible");
+      }
     }
   }
   for (const { at, name } of noReturnCalls.values()) {

@@ -99,6 +99,11 @@ export class MacroTable implements MacroLookup {
     if (body === "") {
       return undefined;
     }
+    // A floating constant (`90.0f`, `(-1.5e3)`): #if cannot evaluate it, but the code uses it as a value.
+    const f = /^\(?\s*([-+]?(?:\d+\.\d*|\.\d+|\d+(?=[eE]))(?:[eE][-+]?\d+)?)[fFlL]?\s*\)?$/.exec(body);
+    if (f) {
+      return parseFloat(f[1]);
+    }
     return evaluateCondition(body, { ...this.asLookup(), undefinedIsZero: false }, depth + 1);
   }
 

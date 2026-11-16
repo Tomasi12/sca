@@ -243,6 +243,86 @@
       "fix": "Point the function pointer to a real function. Calling code at a fixed address (a boot loader) should use that address as a constant, with a justification."
     },
     {
+      "id": "runtime-bugfinder:string-overflow",
+      "title": "String buffer overflow",
+      "kind": "run-time",
+      "group": "Strings and formats",
+      "enabledByDefault": true,
+      "summary": "strcpy(), strcat(), sprintf() or strncpy() can write more characters than the destination array holds.",
+      "rationale": "These functions do not know the size of the destination; a long input writes past its end and corrupts the memory next to it.",
+      "fix": "Use a bounded call (snprintf() with the buffer size, or strncpy() with size - 1 and a terminating 0) and check the input length."
+    },
+    {
+      "id": "runtime-bugfinder:missing-terminator",
+      "title": "String without terminating 0",
+      "kind": "run-time",
+      "group": "Strings and formats",
+      "enabledByDefault": true,
+      "summary": "strncpy() may fill the whole destination array, so a long source leaves it without the terminating 0.",
+      "rationale": "Code that reads the array as a string then runs past its end, until some 0 byte happens to follow.",
+      "fix": "Copy at most size - 1 bytes and set the last byte to 0 right after the copy."
+    },
+    {
+      "id": "runtime-bugfinder:overlapping-copy",
+      "title": "Overlapping copy",
+      "kind": "run-time",
+      "group": "Strings and formats",
+      "enabledByDefault": true,
+      "summary": "memcpy(), strcpy() or sprintf() reads from memory it is writing to.",
+      "rationale": "These functions are undefined when source and destination overlap; optimized versions copy in blocks and can scramble the data.",
+      "fix": "Use memmove() for overlapping blocks, or copy through a separate buffer."
+    },
+    {
+      "id": "runtime-bugfinder:format-mismatch",
+      "title": "printf format does not match the argument",
+      "kind": "run-time",
+      "group": "Strings and formats",
+      "enabledByDefault": true,
+      "summary": "A conversion in a printf-style format does not fit the type of its argument (%d with a float, %f with an int, %s with a number), or the argument is missing.",
+      "rationale": "printf() reads the arguments by the format: a wrong type reads the wrong bytes, and a missing argument reads garbage from the stack.",
+      "fix": "Use the conversion for the argument's type, or cast the argument: (int)x for %d, (double)x for %f."
+    },
+    {
+      "id": "runtime-bugfinder:uncontrolled-format",
+      "title": "Format string from a variable",
+      "kind": "run-time",
+      "group": "Strings and formats",
+      "enabledByDefault": true,
+      "summary": "The format of a printf-style call is a variable (a parameter, a buffer) and no other arguments are passed.",
+      "rationale": "If the text contains '%', printf() reads arguments that do not exist; with %n it even writes to memory. Text from a tester or a bus must never be a format.",
+      "fix": "Pass the text as an argument: printf(\"%s\", msg)."
+    },
+    {
+      "id": "runtime-bugfinder:float-overflow",
+      "title": "Floating-point overflow",
+      "kind": "run-time",
+      "group": "Floating point",
+      "enabledByDefault": true,
+      "summary": "exp() or expf() gets an argument so large that the result is infinite (above about 88 for float, 709 for double).",
+      "rationale": "An infinite value spreads through the following math (inf - inf is NaN) and usually ends in a wrong output or a failed check much later.",
+      "fix": "Clamp the argument to a safe range before the call."
+    },
+    {
+      "id": "runtime-bugfinder:float-invalid",
+      "title": "Invalid floating-point operation",
+      "kind": "run-time",
+      "group": "Floating point",
+      "enabledByDefault": true,
+      "summary": "sqrt() of a negative value, log() of 0 or a negative value, or acos() / asin() outside [-1, 1].",
+      "rationale": "The result is NaN (or -infinity), and every comparison with NaN is false, so later range checks let it through.",
+      "fix": "Check the argument's range first and handle the invalid case."
+    },
+    {
+      "id": "runtime-bugfinder:float-conversion",
+      "title": "Float to integer conversion out of range",
+      "kind": "run-time",
+      "group": "Floating point",
+      "enabledByDefault": true,
+      "summary": "A floating-point value is cast to an integer type that cannot hold it.",
+      "rationale": "Converting a float that does not fit the integer type is undefined behavior: targets saturate, wrap or produce a trap value.",
+      "fix": "Clamp the value to the integer type's range (and handle NaN) before the cast."
+    },
+    {
       "id": "sca-own:float-equality",
       "title": "Floating-point equality",
       "kind": "coding-rule",

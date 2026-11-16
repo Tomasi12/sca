@@ -109,6 +109,14 @@ Click the **shield icon** in the Activity Bar to open **SCA → Issue Monitor**.
 | `runtime-bugfinder:invalid-enum` | a cast `(E)x` where `x` can be outside the range of the enum's constants | definite / possible |
 | `runtime-bugfinder:no-return-call` | a call to a function of the file that can never return but is not declared `_Noreturn`; code after such calls is treated as never reached | definite (warning) |
 | `runtime-bugfinder:bad-function-pointer` | a call through a function pointer made by casting a data object (`(Fn)(uintptr_t)buffer`, `(Fn)&x`); fixed integer addresses are not reported | definite / possible |
+| `runtime-bugfinder:string-overflow` | `strcpy` / `strcat` / `sprintf` into a char array of known size with a source or `%s` of unchecked length, a literal that does not fit, or `strncpy` with a count above the size | definite / possible |
+| `runtime-bugfinder:missing-terminator` | `strncpy(dst, src, n)` where `n` can be the full size of `dst`, without `dst[k] = '\0'` on the next line | definite / possible |
+| `runtime-bugfinder:overlapping-copy` | `memcpy` between overlapping parts of one array (rows of a 2-D array); `strcpy` / `sprintf` that read their own destination | definite / possible |
+| `runtime-bugfinder:format-mismatch` | a printf-family conversion that does not fit its argument (`%d` with a float, `%f` with an integer, `%s` with a number) or has no argument | definite |
+| `runtime-bugfinder:uncontrolled-format` | a printf-family format that is a variable, with no further arguments (not inside a `...` wrapper) | possible (warning) |
+| `runtime-bugfinder:float-overflow` | `expf` / `exp` / `exp2` with an argument that can pass the overflow limit (about 88.7 for float) | definite / possible |
+| `runtime-bugfinder:float-invalid` | `sqrt` of a possibly negative value, `log` of a value that can be 0 or negative, `acos` / `asin` outside [-1, 1] | definite / possible |
+| `runtime-bugfinder:float-conversion` | a cast of a float to an integer type that cannot hold it (a float with no known bound only against types below 32 bits) | definite / possible |
 | `sca-own:switch-default` | `switch` without a `default` clause (a nested switch needs its own) | definite (warning) |
 | `sca-own:goto` | every `goto` statement | definite (warning) |
 | `sca-own:switch-fallthrough` | a case with statements that falls into the next one (no `break`; a `/* fallthrough */` comment marks it as intended) | definite (warning) |
@@ -391,19 +399,21 @@ npm run benchmark -- ../dummy_project --json bench.json --fail-on-fp
 Categories in the key that no check covers yet are listed at the end. Which rule IDs answer which category is set in
 `CATEGORY_RULES` (`src/core/checks/index.ts`). `--fail-on-fp` returns exit code 1 when there is a false positive (for CI).
 
-Result on car-control today: **68 of 76** expected issues found in the 50 covered categories (89 %), **0 false positives**.
+Result on car-control today: **77 of 85** expected issues found in the 58 covered categories (91 %), **0 false positives**.
 Run-time: `div_zero` 5/6, `null_deref` 1/2, `uninit_var` 1/1, `uninit_ptr` 1/1, `out_of_bounds` 5/9, `overflow` 6/8,
 `uint_wrap` 1/1, `shift` 2/2, `conversion` 1/1, `dead_code` 2/2, `unreachable_code` 1/1, `non_terminating_loop` 1/1,
 `stack_escape` 1/1. Memory lifetime: all 9 found (`memory_leak`, `double_free`, `use_after_free`, `bad_free`,
 `dangling_ptr`, `unchecked_alloc`, `alloc_size`, `wrong_sizeof`, `ptr_arith`), no finding on their 8 SAFE lines. Functions
-and values: all 4 found (`missing_return`, `invalid_enum`, `non_terminating_call`, `bad_func_ptr`). Coding rules: all 27 issues in the 24 coding-rule categories found (`switch_default`, `goto` 3/3,
+and values: all 4 found (`missing_return`, `invalid_enum`, `non_terminating_call`, `bad_func_ptr`). Strings and formats:
+all 6 found (`string_overflow` 2/2, `missing_null_terminator`, `overlapping_copy`, `format_string`, `uncontrolled_format`).
+Floating point: all 3 found (`float_overflow`, `float_invalid`, `float_conversion`). Coding rules: all 27 issues in the 24 coding-rule categories found (`switch_default`, `goto` 3/3,
 `missing_break`, `unchecked_return`, `invariant_condition` 2/2, `float_equality`, `assignment_in_condition`,
 `side_effect_in_condition`, `operator_precedence`, `missing_braces`, `empty_body`, `octal_constant`, `implicit_conversion`,
 `signed_unsigned_compare`, `signed_bitwise`, `vla`, `integer_division_in_float`, `unused_variable`, `unused_parameter`,
 `shadowing`, `missing_volatile`, `dynamic_memory`, `magic_number`, `recursion`). The 8 misses are run-time issues that need
 knowledge across files (a NULL or a 0 coming from another module) or about unknown inputs (a length from the bus, an index
-from a struct field). car-control has 87 expected issues in total; the 10 categories without a check yet (11 issues: strings
-and formats, floating point, concurrency) are listed at the end of the benchmark output. Unmarked findings are mostly metrics and
+from a struct field). car-control has 87 expected issues in total; the 2 categories without a check yet (`data_race`,
+`missing_unlock`: concurrency) are listed at the end of the benchmark output. Unmarked findings are mostly metrics and
 magic numbers (car-control turns `sca-own:magic-number` on in its `.sca.json`).
 
 ## Commands (reference)

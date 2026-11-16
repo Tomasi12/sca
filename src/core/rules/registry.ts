@@ -264,6 +264,86 @@ export const RULES: readonly RuleInfo[] = [
     },
   ]),
 
+  // ------------------------------------------------------------------------------------------- strings and formats
+  ...group("run-time", "Strings and formats", [
+    {
+      id: "runtime-bugfinder:string-overflow",
+      title: "String buffer overflow",
+      summary: "strcpy(), strcat(), sprintf() or strncpy() can write more characters than the destination array holds.",
+      rationale: "These functions do not know the size of the destination; a long input writes past its end and corrupts the memory next to it.",
+      fix: "Use a bounded call (snprintf() with the buffer size, or strncpy() with size - 1 and a terminating 0) and check the input length.",
+      bad: "static char name[8];\n\nvoid set_name(const char *s)\n{\n    (void)strcpy(name, s);\n}",
+      good: "static char name[8];\n\nvoid set_name(const char *s)\n{\n    (void)strncpy(name, s, sizeof(name) - 1U);\n    name[sizeof(name) - 1U] = '\\0';\n}",
+    },
+    {
+      id: "runtime-bugfinder:missing-terminator",
+      title: "String without terminating 0",
+      summary: "strncpy() may fill the whole destination array, so a long source leaves it without the terminating 0.",
+      rationale: "Code that reads the array as a string then runs past its end, until some 0 byte happens to follow.",
+      fix: "Copy at most size - 1 bytes and set the last byte to 0 right after the copy.",
+      bad: "void copy(char *out, const char *s)\n{\n    char tmp[12];\n    (void)strncpy(tmp, s, sizeof(tmp));\n    out[0] = tmp[0];\n}",
+      good: "void copy(char *out, const char *s)\n{\n    char tmp[12];\n    (void)strncpy(tmp, s, sizeof(tmp));\n    tmp[sizeof(tmp) - 1U] = '\\0';\n    out[0] = tmp[0];\n}",
+    },
+    {
+      id: "runtime-bugfinder:overlapping-copy",
+      title: "Overlapping copy",
+      summary: "memcpy(), strcpy() or sprintf() reads from memory it is writing to.",
+      rationale: "These functions are undefined when source and destination overlap; optimized versions copy in blocks and can scramble the data.",
+      fix: "Use memmove() for overlapping blocks, or copy through a separate buffer.",
+      bad: "static char rows[4][16];\n\nvoid shift(void)\n{\n    (void)memcpy(rows[0], rows[1], 3U * 16U);\n}",
+      good: "static char rows[4][16];\n\nvoid shift(void)\n{\n    (void)memmove(rows[0], rows[1], 3U * 16U);\n}",
+    },
+    {
+      id: "runtime-bugfinder:format-mismatch",
+      title: "printf format does not match the argument",
+      summary: "A conversion in a printf-style format does not fit the type of its argument (%d with a float, %f with an int, %s with a number), or the argument is missing.",
+      rationale: "printf() reads the arguments by the format: a wrong type reads the wrong bytes, and a missing argument reads garbage from the stack.",
+      fix: "Use the conversion for the argument's type, or cast the argument: (int)x for %d, (double)x for %f.",
+      bad: "void show(float t)\n{\n    (void)printf(\"%d\\n\", t);\n}",
+      good: "void show(float t)\n{\n    (void)printf(\"%d\\n\", (int)t);\n}",
+    },
+    {
+      id: "runtime-bugfinder:uncontrolled-format",
+      title: "Format string from a variable",
+      summary: "The format of a printf-style call is a variable (a parameter, a buffer) and no other arguments are passed.",
+      rationale: "If the text contains '%', printf() reads arguments that do not exist; with %n it even writes to memory. Text from a tester or a bus must never be a format.",
+      fix: "Pass the text as an argument: printf(\"%s\", msg).",
+      bad: "void say(const char *msg)\n{\n    (void)printf(msg);\n}",
+      good: "void say(const char *msg)\n{\n    (void)printf(\"%s\", msg);\n}",
+    },
+  ]),
+
+  // ------------------------------------------------------------------------------------------- floating point
+  ...group("run-time", "Floating point", [
+    {
+      id: "runtime-bugfinder:float-overflow",
+      title: "Floating-point overflow",
+      summary: "exp() or expf() gets an argument so large that the result is infinite (above about 88 for float, 709 for double).",
+      rationale: "An infinite value spreads through the following math (inf - inf is NaN) and usually ends in a wrong output or a failed check much later.",
+      fix: "Clamp the argument to a safe range before the call.",
+      bad: "float grow(float t)\n{\n    return expf(t * 0.5f);\n}",
+      good: "float grow(float t)\n{\n    if (t > 100.0f) {\n        t = 100.0f;\n    }\n    return expf(t * 0.5f);\n}",
+    },
+    {
+      id: "runtime-bugfinder:float-invalid",
+      title: "Invalid floating-point operation",
+      summary: "sqrt() of a negative value, log() of 0 or a negative value, or acos() / asin() outside [-1, 1].",
+      rationale: "The result is NaN (or -infinity), and every comparison with NaN is false, so later range checks let it through.",
+      fix: "Check the argument's range first and handle the invalid case.",
+      bad: "float root(float p)\n{\n    return sqrtf(p);\n}",
+      good: "float root(float p)\n{\n    if (p < 0.0f) {\n        return 0.0f;\n    }\n    return sqrtf(p);\n}",
+    },
+    {
+      id: "runtime-bugfinder:float-conversion",
+      title: "Float to integer conversion out of range",
+      summary: "A floating-point value is cast to an integer type that cannot hold it.",
+      rationale: "Converting a float that does not fit the integer type is undefined behavior: targets saturate, wrap or produce a trap value.",
+      fix: "Clamp the value to the integer type's range (and handle NaN) before the cast.",
+      bad: "short to_raw(float x)\n{\n    return (short)(x * 100.0f);\n}",
+      good: "short to_raw(float x)\n{\n    if (x > 300.0f) {\n        x = 300.0f;\n    } else if (x < -300.0f) {\n        x = -300.0f;\n    }\n    return (short)(x * 100.0f);\n}",
+    },
+  ]),
+
   // -------------------------------------------------------------------------------------------- expressions
   ...group("coding-rule", "Expressions", [
     {

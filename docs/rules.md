@@ -721,6 +721,225 @@ int run(int x)
 }
 ```
 
+## Strings and formats
+
+| Rule | What it finds | Default |
+|---|---|---|
+| [`runtime-bugfinder:string-overflow`](#runtime-bugfinderstring-overflow) | strcpy(), strcat(), sprintf() or strncpy() can write more characters than the destination array holds. | on |
+| [`runtime-bugfinder:missing-terminator`](#runtime-bugfindermissing-terminator) | strncpy() may fill the whole destination array, so a long source leaves it without the terminating 0. | on |
+| [`runtime-bugfinder:overlapping-copy`](#runtime-bugfinderoverlapping-copy) | memcpy(), strcpy() or sprintf() reads from memory it is writing to. | on |
+| [`runtime-bugfinder:format-mismatch`](#runtime-bugfinderformat-mismatch) | A conversion in a printf-style format does not fit the type of its argument (%d with a float, %f with an int, %s with a number), or the argument is missing. | on |
+| [`runtime-bugfinder:uncontrolled-format`](#runtime-bugfinderuncontrolled-format) | The format of a printf-style call is a variable (a parameter, a buffer) and no other arguments are passed. | on |
+
+### runtime-bugfinder:string-overflow
+
+**String buffer overflow.** strcpy(), strcat(), sprintf() or strncpy() can write more characters than the destination array holds.
+
+*Why:* These functions do not know the size of the destination; a long input writes past its end and corrupts the memory next to it.
+
+*Fix:* Use a bounded call (snprintf() with the buffer size, or strncpy() with size - 1 and a terminating 0) and check the input length.
+
+```c
+/* breaks the rule */
+static char name[8];
+
+void set_name(const char *s)
+{
+    (void)strcpy(name, s);
+}
+
+/* follows the rule */
+static char name[8];
+
+void set_name(const char *s)
+{
+    (void)strncpy(name, s, sizeof(name) - 1U);
+    name[sizeof(name) - 1U] = '\0';
+}
+```
+
+### runtime-bugfinder:missing-terminator
+
+**String without terminating 0.** strncpy() may fill the whole destination array, so a long source leaves it without the terminating 0.
+
+*Why:* Code that reads the array as a string then runs past its end, until some 0 byte happens to follow.
+
+*Fix:* Copy at most size - 1 bytes and set the last byte to 0 right after the copy.
+
+```c
+/* breaks the rule */
+void copy(char *out, const char *s)
+{
+    char tmp[12];
+    (void)strncpy(tmp, s, sizeof(tmp));
+    out[0] = tmp[0];
+}
+
+/* follows the rule */
+void copy(char *out, const char *s)
+{
+    char tmp[12];
+    (void)strncpy(tmp, s, sizeof(tmp));
+    tmp[sizeof(tmp) - 1U] = '\0';
+    out[0] = tmp[0];
+}
+```
+
+### runtime-bugfinder:overlapping-copy
+
+**Overlapping copy.** memcpy(), strcpy() or sprintf() reads from memory it is writing to.
+
+*Why:* These functions are undefined when source and destination overlap; optimized versions copy in blocks and can scramble the data.
+
+*Fix:* Use memmove() for overlapping blocks, or copy through a separate buffer.
+
+```c
+/* breaks the rule */
+static char rows[4][16];
+
+void shift(void)
+{
+    (void)memcpy(rows[0], rows[1], 3U * 16U);
+}
+
+/* follows the rule */
+static char rows[4][16];
+
+void shift(void)
+{
+    (void)memmove(rows[0], rows[1], 3U * 16U);
+}
+```
+
+### runtime-bugfinder:format-mismatch
+
+**printf format does not match the argument.** A conversion in a printf-style format does not fit the type of its argument (%d with a float, %f with an int, %s with a number), or the argument is missing.
+
+*Why:* printf() reads the arguments by the format: a wrong type reads the wrong bytes, and a missing argument reads garbage from the stack.
+
+*Fix:* Use the conversion for the argument's type, or cast the argument: (int)x for %d, (double)x for %f.
+
+```c
+/* breaks the rule */
+void show(float t)
+{
+    (void)printf("%d\n", t);
+}
+
+/* follows the rule */
+void show(float t)
+{
+    (void)printf("%d\n", (int)t);
+}
+```
+
+### runtime-bugfinder:uncontrolled-format
+
+**Format string from a variable.** The format of a printf-style call is a variable (a parameter, a buffer) and no other arguments are passed.
+
+*Why:* If the text contains '%', printf() reads arguments that do not exist; with %n it even writes to memory. Text from a tester or a bus must never be a format.
+
+*Fix:* Pass the text as an argument: printf("%s", msg).
+
+```c
+/* breaks the rule */
+void say(const char *msg)
+{
+    (void)printf(msg);
+}
+
+/* follows the rule */
+void say(const char *msg)
+{
+    (void)printf("%s", msg);
+}
+```
+
+## Floating point
+
+| Rule | What it finds | Default |
+|---|---|---|
+| [`runtime-bugfinder:float-overflow`](#runtime-bugfinderfloat-overflow) | exp() or expf() gets an argument so large that the result is infinite (above about 88 for float, 709 for double). | on |
+| [`runtime-bugfinder:float-invalid`](#runtime-bugfinderfloat-invalid) | sqrt() of a negative value, log() of 0 or a negative value, or acos() / asin() outside [-1, 1]. | on |
+| [`runtime-bugfinder:float-conversion`](#runtime-bugfinderfloat-conversion) | A floating-point value is cast to an integer type that cannot hold it. | on |
+
+### runtime-bugfinder:float-overflow
+
+**Floating-point overflow.** exp() or expf() gets an argument so large that the result is infinite (above about 88 for float, 709 for double).
+
+*Why:* An infinite value spreads through the following math (inf - inf is NaN) and usually ends in a wrong output or a failed check much later.
+
+*Fix:* Clamp the argument to a safe range before the call.
+
+```c
+/* breaks the rule */
+float grow(float t)
+{
+    return expf(t * 0.5f);
+}
+
+/* follows the rule */
+float grow(float t)
+{
+    if (t > 100.0f) {
+        t = 100.0f;
+    }
+    return expf(t * 0.5f);
+}
+```
+
+### runtime-bugfinder:float-invalid
+
+**Invalid floating-point operation.** sqrt() of a negative value, log() of 0 or a negative value, or acos() / asin() outside [-1, 1].
+
+*Why:* The result is NaN (or -infinity), and every comparison with NaN is false, so later range checks let it through.
+
+*Fix:* Check the argument's range first and handle the invalid case.
+
+```c
+/* breaks the rule */
+float root(float p)
+{
+    return sqrtf(p);
+}
+
+/* follows the rule */
+float root(float p)
+{
+    if (p < 0.0f) {
+        return 0.0f;
+    }
+    return sqrtf(p);
+}
+```
+
+### runtime-bugfinder:float-conversion
+
+**Float to integer conversion out of range.** A floating-point value is cast to an integer type that cannot hold it.
+
+*Why:* Converting a float that does not fit the integer type is undefined behavior: targets saturate, wrap or produce a trap value.
+
+*Fix:* Clamp the value to the integer type's range (and handle NaN) before the cast.
+
+```c
+/* breaks the rule */
+short to_raw(float x)
+{
+    return (short)(x * 100.0f);
+}
+
+/* follows the rule */
+short to_raw(float x)
+{
+    if (x > 300.0f) {
+        x = 300.0f;
+    } else if (x < -300.0f) {
+        x = -300.0f;
+    }
+    return (short)(x * 100.0f);
+}
+```
+
 ## Expressions
 
 | Rule | What it finds | Default |
