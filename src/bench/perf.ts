@@ -13,6 +13,7 @@ import { Analyzer } from "../core/analyzer";
 import { ALL_CHECKS } from "../core/checks";
 import { SourceParser } from "../core/parser/parser";
 import { Project } from "../core/project/project";
+import { isTranslationUnit } from "../core/languages";
 
 async function main(argv: string[]): Promise<number> {
   const maxIdx = argv.indexOf("--max-seconds");
@@ -49,6 +50,7 @@ async function main(argv: string[]): Promise<number> {
     const parser = await SourceParser.create();
     const analyzer = new Analyzer(ALL_CHECKS, parser);
     const project = Project.load(dir);
+    analyzer.indexProject(project, () => files.filter(isTranslationUnit));
     const runOnce = () => {
       const t0 = process.hrtime.bigint();
       let findings = 0;

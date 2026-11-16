@@ -4,7 +4,7 @@
 // -> justifications (comments in the code, deviations in .sca.json). Results are cached by file content.
 
 import { createHash } from "crypto";
-import { DeclData, Declarations, extractDeclarations } from "./engine/declarations";
+import { DeclData, Declarations, emptyDecls, extractDeclarations } from "./engine/declarations";
 import { describeFunctionAt } from "./engine/debug";
 import { justificationFor, findJustifications } from "./justify";
 import { compareFindings, Finding } from "./finding";
@@ -12,7 +12,9 @@ import { ParsedSource, SourceParser } from "./parser/parser";
 import { MacroTable, preprocess, PreprocessEnv, PreprocessResult } from "./preprocess/preprocessor";
 import { emptyConfig, isRuleEnabled, rulePatternMatches, ScaConfig } from "./project/config";
 import { isEnabledByDefault } from "./rules/registry";
-import { FileContext } from "./project/project";
+import { FileContext, fsReadFile, Project, ReadFile } from "./project/project";
+import { ProjectKnowledge } from "./engine/knowledge";
+import { ProjectIndex } from "./project/projectIndex";
 
 /** What a check gets: the file, its text and, when the parser is loaded, its syntax tree. */
 export interface SourceContext {
@@ -29,6 +31,8 @@ export interface SourceContext {
   readonly config?: ScaConfig;
   /** Quoted includes that were not found; checks that need every header stay quiet when this is not empty. */
   readonly missingIncludes?: readonly string[];
+  /** Facts from the other files of the project (cross-file summaries), when there is a project index. */
+  readonly knowledge?: ProjectKnowledge;
 }
 
 /** A check returns findings for the file it is given. */
@@ -89,6 +93,31 @@ export class Analyzer {
     return [...result];
   }
 
+  /**
+   * Gives the project an index over its source files (`files`), so each file's analysis knows what the other
+   * files return, pass and initialize. Other files are prepared with the same steps as an analyzed file.
+   */
+  indexProject(project: Project, files: () => readonly string[], readFile: ReadFile = fsReadFile): ProjectIndex {
+    const index = new ProjectIndex(files, (file, text, use) => this.withSource(file, text, project.contextFor(file), use), readFile);
+    project.useIndex(index);
+    return index;
+  }
+
+  /** Preprocesses and parses a file and runs `use` on it (undefined without a parser). */
+  withSource<T>(file: string, text: string, context: FileContext | undefined, use: (source: SourceContext) => T): T | undefined {
+    const pre = preprocess(file, text, context?.env ?? NO_PROJECT_ENV);
+    const parsed = this.parser?.parse(file, pre.text);
+    if (!parsed) {
+      return undefined;
+    }
+    try {
+      const declarations = this.declarationsFor(pre, parsed.root);
+      return use({ file, text, parsed, macros: pre.macros, declarations, config: context?.config, missingIncludes: pre.missingIncludes, knowledge: context?.knowledge });
+    } finally {
+      parsed.dispose();
+    }
+  }
+
   /** "Show CFG": the engine's view of the function at a 1-based line (undefined: no parser or no function). */
   describeFunction(file: string, text: string, line: number, context?: FileContext): string | undefined {
     const pre = preprocess(file, text, context?.env ?? NO_PROJECT_ENV);
@@ -97,7 +126,7 @@ export class Analyzer {
       return undefined;
     }
     try {
-      return describeFunctionAt({ file, text, parsed, macros: pre.macros, declarations: this.declarationsFor(pre, parsed.root) }, line);
+      return describeFunctionAt({ file, text, parsed, macros: pre.macros, declarations: this.declarationsFor(pre, parsed.root), knowledge: context?.knowledge }, line);
     } finally {
       parsed.dispose();
     }
@@ -118,7 +147,7 @@ export class Analyzer {
     if (known && known.text === text) {
       return known.data;
     }
-    let data: DeclData = { typedefs: new Map(), structs: new Map(), enums: new Map(), vars: new Map(), funcs: new Map() };
+    let data: DeclData = emptyDecls();
     if (this.parser && text.length <= 400_000) {
       const tree = this.parser.parse(file, text);
       try {
@@ -140,7 +169,7 @@ export class Analyzer {
     let findings: Finding[];
     try {
       const declarations = parsed ? this.declarationsFor(pre, parsed.root) : undefined;
-      const ctx: SourceContext = { file, text, parsed, macros: pre.macros, declarations, config: context?.config, missingIncludes: pre.missingIncludes };
+      const ctx: SourceContext = { file, text, parsed, macros: pre.macros, declarations, config: context?.config, missingIncludes: pre.missingIncludes, knowledge: context?.knowledge };
       findings = this.checks.flatMap((check) => check(ctx));
     } finally {
       parsed?.dispose();

@@ -1,5 +1,6 @@
 // Abstract interpreter: runs one function's control-flow graph over abstract values until nothing changes
-// (a fixed point; loops are widened after a few rounds), then replays it once so checks can observe
+// (a fixed point; loops are widened after a few rounds, then a few narrowing rounds take back what the loop
+// conditions bound, e.g. `i < n - 1` at a loop head), then replays it once so checks can observe
 // every division, dereference, read, store and return with the values that hold there.
 //
 // Tracked: the function's scalar parameters and locals (integers, floats, pointers). Not tracked (always
@@ -7,6 +8,7 @@
 // declared twice, and everything outside the function unless the file summary (see summaries.ts) knows more.
 
 import { Node } from "web-tree-sitter";
+import { budgetNow } from "./clock";
 import { ConstantLookup, numericValue } from "../checks/syntax";
 import { Assume, Cfg, Item } from "./cfg";
 import { STRING_FUNCTIONS, StringContext, stringChecks, StringIssueKind } from "./strings";
@@ -60,6 +62,10 @@ export interface Environment {
   paramValue(fnName: string, info: VarInfo): Value;
   /** For a function in this file that can never return: whether it is declared so (`_Noreturn`) or only behaves so. */
   noReturn?(name: string): "declared" | "implicit" | undefined;
+  /** Length of the arrays the callers pass for a pointer parameter (the smallest one), when known. */
+  paramLength?(fnName: string, info: VarInfo): number | undefined;
+  /** Why field `field` of struct `tag` can be 0 when the object is not known (an explicit 0 somewhere in the project). */
+  fieldZero?(tag: string, field: string): string | undefined;
 }
 
 export interface Observer {
@@ -135,6 +141,9 @@ export interface Budget {
 }
 
 export const DEFAULT_BUDGET: Budget = { maxVisits: 4000, maxMillis: 60, fileMillis: 1500 };
+
+/** Prefix of pseudo variables for fields behind pointer parameters (`->:out.dlc`), set in this function. */
+export const FIELD = "->:";
 
 /** Prefix of pseudo variables for sums of two variables (`addr + len`), learned from conditions. */
 export const SUM = "+:";
@@ -235,7 +244,7 @@ export class State {
       const w = b.vars.get(k);
       if (w) {
         out.vars.set(k, join(v, w));
-      } else if (!k.startsWith(SUM)) {
+      } else if (!k.startsWith(SUM) && !k.startsWith(FIELD)) {
         out.vars.set(k, v);
       }
     });
@@ -294,6 +303,8 @@ export class FunctionModel {
   readonly autoLocals = new Set<string>();
   /** Parameter names (an array parameter is a pointer). */
   readonly params = new Set<string>();
+  /** Pointer-to-const parameters (`const CanFrame *frame`): what they point to is input the function reads. */
+  readonly inputParams = new Set<string>();
 
   constructor(
     readonly fn: Node,
@@ -334,6 +345,9 @@ export class FunctionModel {
       }
       if (found) {
         this.params.add(found.name);
+        if (d?.type === "pointer_declarator" && p.namedChildren.some((c) => c?.type === "type_qualifier" && c.text === "const")) {
+          this.inputParams.add(found.name);
+        }
         seen.set(found.name, (seen.get(found.name) ?? 0) + 1);
         if (found.type) {
           candidates.push({ name: found.name, type: found.type, param: true, index });
@@ -425,6 +439,8 @@ function declaredScalar(d: Node, base: ScalarType | undefined): { name: string; 
 export type Outcome = { readonly ok: true; readonly visits: number } | { readonly ok: false; readonly reason: string; readonly visits: number };
 
 const WIDEN_AFTER = 3;
+/** Decreasing rounds after the fixed point (each recomputes the states from the solved ones; sound). */
+const NARROW_ROUNDS = 2;
 const NORETURN = /^(exit|_Exit|abort|quick_exit|__builtin_unreachable|__builtin_trap|std::abort|std::exit|std::terminate)$/;
 
 type Cmp = "==" | "!=" | "<" | "<=" | ">" | ">=";
@@ -486,7 +502,7 @@ export class FunctionAnalysis {
       this.outcome = { ok: false, reason: this.cfg.unsupported, visits: 0 };
       return this.outcome;
     }
-    const start = Date.now();
+    const start = budgetNow();
     const entry = new State();
     for (const info of this.model.tracked.values()) {
       entry.vars.set(info.name, info.param ? this.env.paramValue(this.name, info) : { ...wild(ofType(info.type)), init: "no" });
@@ -496,12 +512,13 @@ export class FunctionAnalysis {
     this.inStates[this.cfg.entry] = entry;
     const visits = new Array<number>(blocks.length).fill(0);
     const queued = new Set<number>([this.cfg.entry]);
+    let widened = false;
     let total = 0;
     while (queued.size > 0) {
       const id = Math.min(...queued);
       queued.delete(id);
       total++;
-      if (total > this.budget.maxVisits || ((total & 63) === 0 && Date.now() - start > this.budget.maxMillis)) {
+      if (total > this.budget.maxVisits || ((total & 63) === 0 && budgetNow() - start > this.budget.maxMillis)) {
         this.outcome = { ok: false, reason: "time budget exceeded", visits: total };
         return this.outcome;
       }
@@ -521,6 +538,7 @@ export class FunctionAnalysis {
           next = s;
         } else if (this.cfg.loopHeads.has(e.to) && visits[e.to] >= WIDEN_AFTER) {
           next = this.widenStates(old, s);
+          widened = true;
         } else {
           next = State.join(old, s);
         }
@@ -530,8 +548,73 @@ export class FunctionAnalysis {
         }
       }
     }
+    if (widened) {
+      // Only widening loses bounds; without it the fixed point is as tight as narrowing could make it.
+      total += this.narrowStates(entry);
+      if (total > this.budget.maxVisits || budgetNow() - start > this.budget.maxMillis) {
+        this.outcome = { ok: false, reason: "time budget exceeded", visits: total };
+        return this.outcome;
+      }
+    }
     this.outcome = { ok: true, visits: total };
     return this.outcome;
+  }
+
+  /**
+   * Narrowing: widening jumps loop bounds to the type's limits (unbacked). Starting from the solved states
+   * (a sound over-approximation), each round computes every block's state again from its predecessors (this
+   * round's state for earlier blocks, the last round's for back edges). Applying the transfer functions to
+   * sound states keeps them sound, and loop conditions now bound the variables again. A block the fixed
+   * point reaches stays reachable. Returns the visits.
+   */
+  private narrowStates(entry: State): number {
+    const blocks = this.cfg.blocks;
+    const preds: { from: number; index: number }[][] = blocks.map(() => []);
+    blocks.forEach((b, from) => b.succ.forEach((e, index) => preds[e.to].push({ from, index })));
+    const outsOf = (states: (State | undefined)[]) => {
+      const outs = new Map<string, State>();
+      states.forEach((s, id) => {
+        if (!s) {
+          return;
+        }
+        const edges = this.edgeStates(blocks[id].succ, this.runBlock(id, s.copy()));
+        edges.forEach((e, i) => !e.dead && outs.set(`${id}:${i}`, e));
+      });
+      return outs;
+    };
+    let visits = blocks.length;
+    let prev = outsOf(this.inStates);
+    for (let round = 0; round < NARROW_ROUNDS; round++) {
+      const next: (State | undefined)[] = new Array(blocks.length).fill(undefined);
+      const cur = new Map<string, State>();
+      let changed = false;
+      for (let id = 0; id < blocks.length; id++) {
+        let st: State | undefined = id === this.cfg.entry ? entry.copy() : undefined;
+        for (const p of preds[id]) {
+          const s = (p.from < id ? cur : prev).get(`${p.from}:${p.index}`);
+          if (s) {
+            st = st ? State.join(st, s) : s.copy();
+          }
+        }
+        const old = this.inStates[id];
+        // Never lose a block the fixed point reaches: after `a[i]` the engine assumes i was in bounds, and with
+        // tighter loop bounds that assumption alone could make a loop exit (`return NULL;`) look unreachable.
+        st ??= old;
+        next[id] = st;
+        changed ||= st ? !old || !st.equals(old) : old !== undefined;
+        if (st) {
+          visits++;
+          const edges = this.edgeStates(blocks[id].succ, this.runBlock(id, st.copy()));
+          edges.forEach((e, i) => !e.dead && cur.set(`${id}:${i}`, e));
+        }
+      }
+      this.inStates = next;
+      prev = cur;
+      if (!changed) {
+        break;
+      }
+    }
+    return visits;
   }
 
   /** Re-runs every reachable block once with the solved states, reporting to the observer. */
@@ -765,7 +848,76 @@ export class FunctionAnalysis {
     if (this.env.isStaticObject(name)) {
       return this.staticPointer(name, node, this.typed(node, this.env.globalRead(name) ?? unknown()), st);
     }
+    if (this.env.decls.isVolatileVar(name)) {
+      return this.input(node) ?? this.typed(node, unknown());
+    }
     return this.typed(node, unknown());
+  }
+
+  /**
+   * A value that comes from outside the program: a volatile object (a hardware register) or a field behind a
+   * pointer-to-const parameter. Like an unchecked parameter, it can be any value of its declared type, so
+   * both bounds are backed by the type. No zero witness: an input alone is no evidence of a 0.
+   */
+  private input(node: Node): Value | undefined {
+    const t = this.typing.scalar(node);
+    return t && t.kind === "int" && Number.isFinite(t.lo) && Number.isFinite(t.hi) ? ofType(t) : undefined;
+  }
+
+  /** True for a field access that reads a volatile field (`box->DLC` with `volatile u32 DLC`). */
+  private isVolatileField(node: Node): boolean {
+    if (node.type !== "field_expression") {
+      return false;
+    }
+    const arg = field(node, "argument");
+    const member = fieldOpt(node, "field");
+    if (!arg || !member) {
+      return false;
+    }
+    const t = this.typing.of(arg);
+    const struct = field(node, "operator")?.type === "->" ? this.typing.element(t) : t;
+    return this.env.decls.isVolatileField(struct, text(member));
+  }
+
+  /** A field behind a pointer parameter: what this function stored there, else the input or what the project knows. */
+  private paramField(node: Node, path: string, st: State): Value {
+    const known = st.vars.get(path);
+    if (known) {
+      return known;
+    }
+    const param = path.slice(FIELD.length).split(".")[0];
+    if (this.model.inputParams.has(param) || this.isVolatileField(node)) {
+      const v = this.input(node);
+      if (v) {
+        return v;
+      }
+    }
+    return this.typed(node, withZero(unknown(this.typing.scalar(node)?.kind === "ptr" ? "ptr" : "int"), this.fieldZeroOf(node)));
+  }
+
+  /** The project's reason why the field read by `node` (`p->f`, `s.f`) can be 0, when the object is unknown. */
+  private fieldZeroOf(node: Node): string | undefined {
+    if (node.type !== "field_expression" || !this.env.fieldZero) {
+      return undefined;
+    }
+    const arg = field(node, "argument");
+    const member = fieldOpt(node, "field");
+    if (!arg || !member) {
+      return undefined;
+    }
+    const t = this.typing.of(arg);
+    const tag = this.env.decls.structTag(field(node, "operator")?.type === "->" ? this.typing.element(t) : t);
+    return tag ? this.env.fieldZero(tag, text(member)) : undefined;
+  }
+
+  /** Forgets what this function stored behind pointer parameters (all of them, or those of `param`). */
+  private forgetFields(st: State, param?: string): void {
+    const prefix = param === undefined ? FIELD : `${FIELD}${param}.`;
+    for (const k of [...st.vars.keys()]) {
+      if (k.startsWith(prefix)) {
+        st.vars.delete(k);
+      }
+    }
   }
 
   /** A read of a static pointer: which block it points to (what this function stored, or what it held at the start). */
@@ -1163,6 +1315,7 @@ export class FunctionAnalysis {
         // The callee may keep a pointer argument and may change static pointers.
         values.forEach((v) => this.escape(v, st));
         st.statics.clear();
+        this.forgetFields(st);
         for (const k of [...st.blocks.keys()]) {
           if (k.startsWith(ENTRY_BLOCK)) {
             st.blocks.delete(k);
@@ -1172,6 +1325,12 @@ export class FunctionAnalysis {
     }
     if (name && /^(memcpy|memmove|memset|__builtin_memcpy|__builtin_memset)$/.test(name) && args.length >= 3 && !st.dead) {
       this.blockExtent(node, name, args, values[2], st);
+    }
+    if (name && /^(memcpy|memmove|memset|strcpy|strncpy|__builtin_memcpy|__builtin_memset)$/.test(name) && args.length >= 1) {
+      const dest = pointerRoot(args[0]);
+      if (dest && this.model.params.has(dest)) {
+        this.forgetFields(st, dest);
+      }
     }
     if (name && NORETURN.test(name)) {
       st.dead = true;
@@ -1372,6 +1531,12 @@ export class FunctionAnalysis {
     if (st.dead) {
       return unknown();
     }
+    if (path?.startsWith(FIELD)) {
+      return this.paramField(node, path, st);
+    }
+    if (!path && this.isVolatileField(node)) {
+      return this.input(node) ?? this.typed(node, unknown());
+    }
     return this.typed(node, path ? this.env.globalRead(path) ?? unknown() : unknown());
   }
 
@@ -1431,6 +1596,9 @@ export class FunctionAnalysis {
       if (field(node, "operator")?.type === "->") {
         const p = this.eval(arg, st);
         this.dereferenced(node, arg, p, st);
+        if (!p.base && arg.type === "identifier" && this.model.params.has(text(arg)) && this.model.tracked.get(text(arg))?.type.kind === "ptr") {
+          return `${FIELD}${text(arg)}.${member}`;
+        }
         return p.base ? `${p.base}.${member}` : undefined;
       }
       const base = this.accessPath(arg, st);
@@ -1453,7 +1621,9 @@ export class FunctionAnalysis {
         this.dereferenced(node, arg, p, st);
         return p.base;
       }
-      return this.accessPath(arg, st);
+      const base = this.accessPath(arg, st);
+      // One element of an array behind a pointer parameter: not tracked (the index is not part of the path).
+      return base?.startsWith(FIELD) ? undefined : base;
     }
     if (node.type === "parenthesized_expression") {
       const inner = innerExpression(node);
@@ -1517,7 +1687,7 @@ export class FunctionAnalysis {
    * bounds (the program went on), so one bad index gives one finding, not one per later use.
    */
   private indexed(at: Node, arrayNode: Node, indexNode: Node, iv: Value, st: State): void {
-    const length = this.env.decls.arrayLength(this.typing.of(arrayNode));
+    const length = this.env.decls.arrayLength(this.typing.of(arrayNode)) ?? this.paramArrayLength(arrayNode);
     const it = this.typing.scalar(indexNode);
     let p = at.parent;
     while (p?.type === "parenthesized_expression") {
@@ -1534,6 +1704,33 @@ export class FunctionAnalysis {
         st.vars.set(info.name, inside);
       }
     }
+  }
+
+  /** For `p[i]` with p a pointer parameter the function never changes: the array length its callers pass. */
+  private paramArrayLength(arrayNode: Node): number | undefined {
+    const n = stripParens(arrayNode);
+    const info = n.type === "identifier" ? this.model.tracked.get(text(n)) : undefined;
+    if (!info?.param || info.type.kind !== "ptr" || !this.env.paramLength || this.assignedNames().has(info.name)) {
+      return undefined;
+    }
+    return this.env.paramLength(this.name, info);
+  }
+
+  private assigned: Set<string> | undefined;
+
+  /** Names assigned or incremented anywhere in the function. */
+  private assignedNames(): Set<string> {
+    if (!this.assigned) {
+      const out = new Set<string>();
+      for (const n of this.cfg.fn.descendantsOfType(["assignment_expression", "update_expression"])) {
+        const target = n ? stripParens(n.childForFieldName("left") ?? n.childForFieldName("argument") ?? n) : undefined;
+        if (target?.type === "identifier") {
+          out.add(target.text);
+        }
+      }
+      this.assigned = out;
+    }
+    return this.assigned;
   }
 
   /** memcpy / memset / ... : the end of the block in the destination and source, against their lengths. */
@@ -1633,6 +1830,9 @@ export class FunctionAnalysis {
       return v;
     }
     if (target.kind === "global") {
+      if (target.path.startsWith(FIELD)) {
+        return this.paramField(stripParens(node), target.path, st);
+      }
       return this.env.globalRead(target.path) ?? unknown();
     }
     return unknown();
@@ -1646,11 +1846,24 @@ export class FunctionAnalysis {
       const stored = { ...convert(v, target.info.type), init: "yes" as const };
       st.vars.set(target.info.name, stored);
       dropSums(st, target.info.name);
+      if (target.info.type.kind === "ptr") {
+        this.forgetFields(st, target.info.name);
+      }
       return stored;
     }
     if (target.kind === "global") {
       this.observer?.store?.(target.path, v, at);
       const left = at.type === "assignment_expression" ? field(at, "left") : at.type === "update_expression" ? field(at, "argument") : null;
+      if (target.path.startsWith(FIELD)) {
+        const t = left ? this.typing.scalar(left) : undefined;
+        if (t) {
+          st.vars.set(target.path, { ...convert(v, t), init: "yes" });
+        } else {
+          this.forgetFields(st, target.path.slice(FIELD.length).split(".")[0]);
+        }
+        this.escape(v, st);
+        return v;
+      }
       if (!target.path.includes(".") && (v.heap !== undefined || (left && this.typing.scalar(left)?.kind === "ptr"))) {
         st.statics.set(target.path, v);
       }
@@ -1894,10 +2107,13 @@ export class FunctionAnalysis {
     }
     const name = targetName(node);
     const info = name ? this.model.tracked.get(name) : undefined;
-    if (!info) {
+    // A field behind a pointer parameter (`f->dlc <= 8`) is narrowed like a variable.
+    const fieldPath = info ? undefined : this.fieldPathOf(n);
+    const key = info?.name ?? fieldPath;
+    if (!key) {
       return;
     }
-    const v = s.vars.get(info.name);
+    const v = info ? s.vars.get(key) : s.vars.get(key) ?? this.paramField(n, key, s);
     if (!v) {
       return;
     }
@@ -1946,10 +2162,24 @@ export class FunctionAnalysis {
       s.dead = true;
       return;
     }
-    s.vars.set(info.name, withZero(next, next.zero));
-    if (v.kind === "ptr") {
+    s.vars.set(key, withZero(next, next.zero));
+    if (info && v.kind === "ptr") {
       sameBlockNullness(s, info.name, s.vars.get(info.name)!);
     }
+  }
+
+  /** The pseudo variable of `p->f` for a pointer parameter p (see FIELD), or undefined. */
+  private fieldPathOf(n: Node): string | undefined {
+    const x = stripCasts(stripParens(n));
+    if (x.type !== "field_expression" || field(x, "operator")?.type !== "->") {
+      return undefined;
+    }
+    const arg = field(x, "argument");
+    const member = fieldOpt(x, "field");
+    if (arg?.type !== "identifier" || !member || !this.model.params.has(text(arg)) || this.model.tracked.get(text(arg))?.type.kind !== "ptr") {
+      return undefined;
+    }
+    return `${FIELD}${text(arg)}.${text(member)}`;
   }
 }
 
@@ -2023,6 +2253,31 @@ function stripParens(node: Node): Node {
     n = inner;
   }
   return n;
+}
+
+/** The variable an address expression starts from: `out->data`, `&p->f[i]`, `(u8 *)p` -> out / p. */
+function pointerRoot(node: Node): string | undefined {
+  let n: Node | null = node;
+  while (n) {
+    switch (n.type) {
+      case "identifier":
+        return text(n);
+      case "subscript_expression":
+      case "field_expression":
+      case "pointer_expression":
+        n = field(n, "argument");
+        break;
+      case "cast_expression":
+        n = field(n, "value");
+        break;
+      case "parenthesized_expression":
+        n = innerExpression(n) ?? null;
+        break;
+      default:
+        return undefined;
+    }
+  }
+  return undefined;
 }
 
 /** The variable an object expression is part of: `x`, `x[i]`, `x.f`. */

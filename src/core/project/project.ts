@@ -7,6 +7,7 @@ import * as path from "path";
 import { PreprocessEnv } from "../preprocess/preprocessor";
 import { CompileDatabase } from "./compileCommands";
 import { CONFIG_FILE, emptyConfig, parseConfig, ScaConfig } from "./config";
+import { ProjectKnowledge } from "../engine/knowledge";
 
 /** Everything the analyzer needs to know about one file's surroundings. */
 export interface FileContext {
@@ -20,6 +21,8 @@ export interface FileContext {
   readonly compileDatabase?: string;
   /** The project root folder. */
   readonly root?: string;
+  /** What the other files of the project tell this one (cross-file summaries), when the project has an index. */
+  readonly knowledge?: ProjectKnowledge;
 }
 
 export type ReadFile = (file: string) => string | undefined;
@@ -47,6 +50,7 @@ export class Project {
   private readonly id = nextId++;
   private generation = 0;
   private readonly headers = new Map<string, string | undefined>();
+  private knowledge?: ProjectKnowledge & { invalidate(file?: string): void };
 
   private constructor(
     readonly root: string,
@@ -95,13 +99,24 @@ export class Project {
   }
 
   get version(): string {
-    return `${this.id}.${this.generation}`;
+    return `${this.id}.${this.generation}${this.knowledge ? "." + this.knowledge.version : ""}`;
+  }
+
+  /** Uses a project index for cross-file knowledge (see projectIndex.ts). */
+  useIndex(index: ProjectKnowledge & { invalidate(file?: string): void }): void {
+    this.knowledge = index;
+  }
+
+  /** A source file of the project changed on disk (saved, created, deleted): its cross-file facts are redone. */
+  sourceChanged(file?: string): void {
+    this.knowledge?.invalidate(file);
   }
 
   /** Call when a header may have changed: drops cached headers and invalidates cached results. */
   invalidateHeaders(): void {
     this.headers.clear();
     this.generation++;
+    this.knowledge?.invalidate();
   }
 
   contains(file: string): boolean {
@@ -128,7 +143,7 @@ export class Project {
       complete: flags !== undefined,
       readFile: (f) => this.header(f),
     };
-    return { env, config: this.config, relPath: this.relPath(file), version: this.version, compileDatabase: this.dbPath, root: this.root };
+    return { env, config: this.config, relPath: this.relPath(file), version: this.version, compileDatabase: this.dbPath, root: this.root, knowledge: this.knowledge };
   }
 
   private header(file: string): string | undefined {

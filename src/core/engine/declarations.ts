@@ -25,10 +25,16 @@ export interface DeclData {
   readonly enums: Map<string, number>;
   readonly vars: Map<string, CType>;
   readonly funcs: Map<string, CType>;
+  /** Volatile objects: `tag.field` for struct fields, the plain name for variables (hardware registers). */
+  readonly volatiles?: Set<string>;
 }
 
 export function emptyDecls(): DeclData {
-  return { typedefs: new Map(), structs: new Map(), enums: new Map(), vars: new Map(), funcs: new Map() };
+  return { typedefs: new Map(), structs: new Map(), enums: new Map(), vars: new Map(), funcs: new Map(), volatiles: new Set() };
+}
+
+function isVolatileDecl(decl: Node): boolean {
+  return decl.namedChildren.some((c) => c?.type === "type_qualifier" && c.text === "volatile");
 }
 
 const CONTAINERS = new Set(["translation_unit", "preproc_if", "preproc_ifdef", "preproc_else", "preproc_elif", "preproc_elifdef", "linkage_specification", "declaration_list"]);
@@ -69,6 +75,9 @@ export function extractDeclarations(root: Node): DeclData {
             out.funcs.set(name, type.ret);
           } else {
             out.vars.set(name, type);
+            if (isVolatileDecl(c)) {
+              out.volatiles?.add(name);
+            }
           }
         }
       } else if (c.type === "function_definition") {
@@ -123,6 +132,9 @@ export function specifierType(spec: Node | null, out: DeclData | undefined, owne
               const { name, type } = applyDeclarator(d, base);
               if (name) {
                 fields.set(name, type);
+                if (isVolatileDecl(fd)) {
+                  out.volatiles?.add(`${tag}.${name}`);
+                }
               }
             }
           }
@@ -303,6 +315,30 @@ export class Declarations implements TypedefSource {
     }
     const v = evaluateCondition(r.size, { ...this.macros, undefinedIsZero: false });
     return v !== undefined && v > 0 ? v : undefined;
+  }
+
+  /** True for a volatile field of a struct type (a hardware register: its value comes from outside). */
+  isVolatileField(t: CType | undefined, name: string): boolean {
+    const r = this.resolve(t);
+    return r?.k === "struct" && this.parts.some((p) => p.volatiles?.has(`${r.tag}.${name}`) ?? false);
+  }
+
+  /** True for a variable declared volatile. */
+  isVolatileVar(name: string): boolean {
+    return this.parts.some((p) => p.volatiles?.has(name) ?? false);
+  }
+
+  /** The fields of a struct type in declaration order (empty when unknown). */
+  fieldsOf(t: CType | undefined): [string, CType][] {
+    const r = this.resolve(t);
+    const f = r?.k === "struct" ? this.find((d) => d.structs, r.tag) : undefined;
+    return f ? [...f] : [];
+  }
+
+  /** The tag of a struct type (after typedefs). */
+  structTag(t: CType | undefined): string | undefined {
+    const r = this.resolve(t);
+    return r?.k === "struct" ? r.tag : undefined;
   }
 
   enumValue(name: string): number | undefined {

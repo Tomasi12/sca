@@ -17,3 +17,8 @@ export function isSourceFile(filePath: string): boolean {
   const sep = Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\"));
   return dot > sep && SOURCE_EXTENSIONS.includes(filePath.slice(dot).toLowerCase());
 }
+
+/** True for a C/C++ source file (a translation unit, not a header). */
+export function isTranslationUnit(filePath: string): boolean {
+  return /\.(c|cpp|cc|cxx)$/i.test(filePath);
+}

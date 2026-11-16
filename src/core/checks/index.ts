@@ -31,6 +31,7 @@ import {
   OPERATOR_PRECEDENCE_RULE,
   SIDE_EFFECT_IN_LOGICAL_RULE,
 } from "./expressions";
+import { checkAccumulators } from "./accumulate";
 import { checkMetrics, METRIC_RULES } from "./metrics";
 import { checkRecursion, RECURSION_RULE } from "./recursion";
 import {
@@ -77,6 +78,7 @@ import {
 } from "./typesLiterals";
 
 export const ALL_CHECKS: readonly Check[] = [
+  checkAccumulators,
   checkRuntime,
   checkSwitchDefault,
   checkGoto,
