@@ -136,12 +136,23 @@ Explain Rule** (editor context menu, the **?** next to a finding in the Issue Mo
 the rule's full page.
 
 **Evidence first.** Every run-time finding needs a reason SCA can show. For 0 and NULL it is a named source
-(an unchecked parameter, a constant, a memset, a function that can return 0 / NULL). For bounds, overflow, shifts,
-wrap-around and conversions only range bounds that come from the code count: constants, a parameter's type
-(the caller can pass any value), or a check like `i <= 16`. Bounds of values SCA knows nothing about (globals from
-other files, fields behind pointer parameters, results of functions in other files) and bounds that grew in a loop
-never give a finding. That is why SCA reads headers: struct field array sizes, enum values, typedefs, prototypes and
-register macros like `#define ADC1 (&hw_adc1)` come from there.
+(an unchecked parameter, a constant, a memset, a function that can return 0 / NULL, a caller that passes NULL, an
+initializer that puts 0 into a struct field). For bounds, overflow, shifts, wrap-around and conversions only range
+bounds that come from the code count: constants, a parameter's type (the caller can pass any value), a check like
+`i <= 16`, or an **input's type**: a volatile object (a hardware register) and a field behind a pointer-to-const
+parameter (`const CanFrame *frame`) can hold any value of their type, like an unchecked parameter. Bounds of other
+values SCA knows nothing about (globals from other files, fields behind other pointer parameters) and bounds that grew
+in a loop never give a finding; "unknown" is not "can be anything bad". That is why SCA reads headers: struct field
+array sizes, enum values, typedefs, prototypes, `volatile` and register macros like `#define ADC1 (&hw_adc1)` come
+from there.
+
+**Across files.** With a project (the CLI, the benchmark and the extension all have one), SCA keeps an index over the
+project's source files: return values of functions defined in other files, the values and array lengths the callers
+in the whole project pass, and explicit 0 values that initializers put into struct fields. Facts of a file are
+computed once per file content and reused; saving a source file starts them again. Only facts the code backs are
+used: a NULL that only some arguments lead to (`return (i < n) ? &t[i] : NULL;`) is no evidence for a caller, and a
+function defined in several files gives no facts at all. Example project:
+[tests/samples/cross_file](tests/samples/cross_file).
 
 div-zero runs on the **value engine** (see [How the value engine works](#how-the-value-engine-works)): it follows
 every path through the function and knows the divisor's range at the division. Where a 0 can come from:
@@ -153,10 +164,13 @@ every path through the function and knows the divisor's range at the division. W
 | a loop counter's first value | `for (i = 0; i < n; i++) s += a / i;` |
 | a `static` object that some code in the file sets to 0 | `memset(tab, 0, ...)`; a store of an unchecked parameter |
 | a function in the same file that can return 0 | `return a / count_or_zero(x);` |
+| a function in another file of the project that can return 0 | `x / other_file_count()` |
+| a struct field that an initializer somewhere in the project sets to 0, read from a copy of unknown origin | `erased = {0U, 1950U}` in main.c; `wcal = *calib; ... / wcal.ticks_per_rev` |
 
 Conditions narrow the value: `if` / `else`, loops, `switch`, `?:`, `&&` / `||`, early `return` / `break` /
 `continue` / `goto` / `abort()`, `assert(...)`. Values SCA knows nothing about (globals from other files, fields
-behind pointer parameters, functions from other files) never give a finding: "unknown" is not "can be 0".
+behind pointer parameters, functions it cannot see) never give a finding: "unknown" is not "can be 0". Inputs
+(volatile registers, fields behind pointer-to-const parameters) get the bounds of their type, but no zero witness.
 A `static` function whose callers in the file all pass a non-zero constant is not reported.
 
 Not covered: functions with statements the engine cannot model yet (some C++: `try`, range-`for`) or that exceed the
@@ -178,10 +192,18 @@ reported there. Examples: [tests/samples/div_by_zero_cases.c](tests/samples/div_
    not know also forgets what it knew about `static` pointers. A same-file function that returns memory it allocated
    gives the caller a new block to own.
 3. **Solver** (`interpreter.ts`): runs the graph until nothing changes; loops are widened to the type's limits after a few
-   rounds, so they always end. Conditions narrow values on each branch (`if (n > 0)` gives `n ∈ [1, max]` inside).
+   rounds, so they always end, then a few narrowing rounds take back what the loop conditions bound (`i < n - 1`).
+   Conditions narrow values on each branch (`if (n > 0)` gives `n ∈ [1, max]` inside). Fields behind pointer
+   parameters that the function sets (`out->dlc = ...`) are followed until a call or a new pointer value.
 4. **File summaries** (`summaries.ts`): stores to `static` objects, return values of functions in the file, and the
    constant arguments of `static` functions. They are computed only when a finding depends on them.
-5. **Time budget**: at most 4,000 block visits and 60 ms per function, 1.5 s per file. Code over budget is skipped quietly,
+5. **Project index** (`src/core/project/projectIndex.ts`, interface `knowledge.ts`): what the other files tell this
+   one (see "Across files" above). A text scan finds the files that can define or call a name; only those are parsed,
+   once per file content. Time spent on other files does not count against the budget below.
+6. **Accumulators** (`src/core/checks/accumulate.ts`): `value = value * 10 + digit` in a loop that stops only at a data
+   value, and a field that lives across calls and adds a full-width step on every call (`p->integral += error * p->ki`)
+   while nothing in the project compares or limits it, are possible overflows.
+7. **Time budget**: at most 4,000 block visits and 60 ms per function, 1.5 s per file. Code over budget is skipped quietly,
    so the editor never waits for it.
 
 **SCA: Show Control-Flow Graph** (editor context menu, or the command palette with the cursor in a function) opens the
@@ -391,8 +413,8 @@ npm run benchmark -- ../dummy_project --json bench.json --fail-on-fp
 Categories in the key that no check covers yet are listed at the end. Which rule IDs answer which category is set in
 `CATEGORY_RULES` (`src/core/checks/index.ts`). `--fail-on-fp` returns exit code 1 when there is a false positive (for CI).
 
-Result on car-control today: **68 of 76** expected issues found in the 50 covered categories (89 %), **0 false positives**.
-Run-time: `div_zero` 5/6, `null_deref` 1/2, `uninit_var` 1/1, `uninit_ptr` 1/1, `out_of_bounds` 5/9, `overflow` 6/8,
+Result on car-control today: **76 of 76** expected issues found in the 50 covered categories (100 %), **0 false positives**.
+Run-time: `div_zero` 6/6, `null_deref` 2/2, `uninit_var` 1/1, `uninit_ptr` 1/1, `out_of_bounds` 9/9, `overflow` 8/8,
 `uint_wrap` 1/1, `shift` 2/2, `conversion` 1/1, `dead_code` 2/2, `unreachable_code` 1/1, `non_terminating_loop` 1/1,
 `stack_escape` 1/1. Memory lifetime: all 9 found (`memory_leak`, `double_free`, `use_after_free`, `bad_free`,
 `dangling_ptr`, `unchecked_alloc`, `alloc_size`, `wrong_sizeof`, `ptr_arith`), no finding on their 8 SAFE lines. Functions
@@ -400,9 +422,12 @@ and values: all 4 found (`missing_return`, `invalid_enum`, `non_terminating_call
 `missing_break`, `unchecked_return`, `invariant_condition` 2/2, `float_equality`, `assignment_in_condition`,
 `side_effect_in_condition`, `operator_precedence`, `missing_braces`, `empty_body`, `octal_constant`, `implicit_conversion`,
 `signed_unsigned_compare`, `signed_bitwise`, `vla`, `integer_division_in_float`, `unused_variable`, `unused_parameter`,
-`shadowing`, `missing_volatile`, `dynamic_memory`, `magic_number`, `recursion`). The 8 misses are run-time issues that need
-knowledge across files (a NULL or a 0 coming from another module) or about unknown inputs (a length from the bus, an index
-from a struct field). car-control has 87 expected issues in total; the 10 categories without a check yet (11 issues: strings
+`shadowing`, `missing_volatile`, `dynamic_memory`, `magic_number`, `recursion`). Eight of the run-time issues need the
+project index or inputs: a NULL from `nvm_wheel_calib()` passed in main.c, a 0 from an erased calibration initializer,
+a DLC read from a CAN register, an id from a `const CanFrame *`, the 8-byte buffers callers pass, a table length
+parameter, a digit loop and an integrator without anti-windup. One new unmarked run-time finding comes with them:
+`can.c:62` (`data[offset]` with an unchecked `offset`, the same defect as line 63 for offsets of 8 and more).
+car-control has 87 expected issues in total; the 10 categories without a check yet (11 issues: strings
 and formats, floating point, concurrency) are listed at the end of the benchmark output. Unmarked findings are mostly metrics and
 magic numbers (car-control turns `sca-own:magic-number` on in its `.sca.json`).
 
@@ -428,7 +453,8 @@ unit and integration tests on Linux and Windows; on Linux also the car-control b
 a 2,000-file speed test, a SARIF report and the `.vsix` package (both kept as build artifacts).
 
 ## Speed
-2,000 copies of car-control (~204,000 lines) take about **11.5 s** on a laptop the first time, about 6 ms per file with all
+2,000 copies of car-control (~204,000 lines) take about **16 s** on a laptop the first time (project index included),
+about 8 ms per file with all
 run-time checks, coding rules and metrics (about 4 ms per file with the run-time checks only); unchanged files come from a
 cache (about 0.4 ms per file). On save only the saved file is analyzed. The coding rules and metrics share one index of the
 syntax tree per file. External backends are not part of these numbers. Measure with `npm run perf`.
@@ -443,9 +469,9 @@ src/core/parser/          C/C++ parser (tree-sitter, WASM) and syntax-tree helpe
 src/core/checks/          native checks: run-time, coding rules (expressions, control flow, types, declarations), recursion, metrics; list + category map in index.ts
 src/core/rules/           rule registry (descriptions in our own words, examples) and rule help text
 src/core/backends/        optional cppcheck / clang-tidy: command lines, output parsers, process runner, merge
-src/core/engine/          value engine: control-flow graph, value ranges, solver, file summaries, Show CFG text
+src/core/engine/          value engine: control-flow graph, value ranges, solver, file summaries, Show CFG text, cross-file knowledge interface
 src/core/preprocess/      #if evaluation and macro table (small preprocessor for analysis)
-src/core/project/         compile_commands.json, .sca.json, per-project context
+src/core/project/         compile_commands.json, .sca.json, per-project context, project index (cross-file facts)
 src/core/                 also: justify.ts, baseline.ts, report.ts (CSV / SARIF / HTML)
 src/cli/                  headless analysis (npm run analyze)
 schemas/                  JSON schema for .sca.json

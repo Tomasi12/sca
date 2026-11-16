@@ -17,6 +17,7 @@ import { Finding } from "../core/finding";
 import { SourceParser } from "../core/parser/parser";
 import { Project } from "../core/project/project";
 import { relative, renderReport, ReportFormat } from "../core/report";
+import { isTranslationUnit } from "../core/languages";
 import { sourceFiles } from "./files";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -39,6 +40,7 @@ export async function analyzeProject(root: string, options: { baseline?: boolean
   const analyzer = new Analyzer(ALL_CHECKS, parser);
   const started = Date.now();
   const files = sourceFiles(root, project.config.exclude);
+  analyzer.indexProject(project, () => files.filter(isTranslationUnit));
   const baseline = options.baseline ? parseBaseline(fs.readFileSync(path.join(root, BASELINE_FILE), "utf8")) : undefined;
   const findings: Finding[] = [];
   const backendProblems = new Set<string>();

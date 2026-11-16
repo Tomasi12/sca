@@ -8,15 +8,20 @@
 //   * Parameters of `static` functions whose only uses are direct calls in this file: the join of the
 //     argument values at the calls (each caller is solved for that). An argument nothing is known about
 //     counts as "anything the caller passes", like a parameter of a function other files can call.
+//   * With project knowledge (knowledge.ts): return values of functions defined in other files, a NULL that
+//     a caller somewhere in the project passes for a pointer parameter, the length of the arrays the callers
+//     pass, and explicit 0 values that initializers elsewhere put into a struct field.
 
 import { Node } from "web-tree-sitter";
+import { budgetNow } from "./clock";
 import { ConstantLookup, numericValue } from "../checks/syntax";
 import { buildCfg, Cfg, functionName } from "./cfg";
 import { Budget, DEFAULT_BUDGET, Environment, FunctionAnalysis, FunctionModel, Observer, VarInfo } from "./interpreter";
 import { SyntaxCache, withCache } from "./syntaxCache";
 import { Declarations } from "./declarations";
 import { TypeTable } from "./types";
-import { exact, join, ofType, unknown, Value, wild, withZero } from "./value";
+import { exact, isExact, join, ofType, unknown, Value, wild, withZero } from "./value";
+import { ProjectKnowledge } from "./knowledge";
 
 export interface EngineStats {
   analyzed: number;
@@ -25,8 +30,19 @@ export interface EngineStats {
   reasons: Map<string, number>;
 }
 
-/** check: real summaries; lazy: summaries not looked up yet; stores: collecting stores; summary: return values. */
-type Mode = "check" | "lazy" | "stores" | "summary";
+/**
+ * check: real summaries; lazy: summaries not looked up yet; stores: collecting stores; summary: return values;
+ * args: argument values of calls for the project index (real return values, parameters as callers see them).
+ */
+type Mode = "check" | "lazy" | "stores" | "summary" | "args";
+
+/** One direct call of a function another file may define: argument values and array lengths. */
+export interface CallRecord {
+  readonly caller: string;
+  readonly args: readonly Value[];
+  readonly lengths: readonly (number | undefined)[];
+  readonly texts: readonly string[];
+}
 
 const LAZY = "(not looked up yet)";
 const LAZY_RESULT: Value = { lo: -Infinity, hi: Infinity, kind: "int", init: "yes", zero: LAZY };
@@ -56,7 +72,7 @@ export class FileEngine {
   private identifiersByName: Map<string, Node[]> | undefined;
   private functionList: Node[] | undefined;
   private readonly syntax = new SyntaxCache();
-  private readonly started = Date.now();
+  private readonly started = budgetNow();
   private readonly returns = new Map<string, Value | undefined | "busy">();
   private readonly callerArgs = new Map<string, (Value | undefined)[] | null>();
   /** Argument values of the calls in one caller (by call node id), from solving the caller. */
@@ -64,6 +80,8 @@ export class FileEngine {
   private readonly busyCallers = new Set<number>();
   /** Functions of the file that never return (null: they can return). */
   private readonly noReturns = new Map<string, "declared" | "implicit" | null | "busy">();
+  /** Static objects some function overwrites as a whole with a value nothing is known about (`wcal = *calib`). */
+  private readonly opaque = new Set<string>();
   readonly decls: Declarations;
 
   constructor(
@@ -71,7 +89,9 @@ export class FileEngine {
     readonly consts?: ConstantLookup,
     readonly budget: Budget = DEFAULT_BUDGET,
     decls?: Declarations,
-    private readonly macroBody: (name: string) => string | undefined = () => undefined
+    private readonly macroBody: (name: string) => string | undefined = () => undefined,
+    readonly knowledge?: ProjectKnowledge,
+    readonly file = ""
   ) {
     this.decls = decls ?? Declarations.empty();
     for (const n of root.descendantsOfType(INDEXED)) {
@@ -116,6 +136,70 @@ export class FileEngine {
         }
       }
     }
+  }
+
+  /** Functions this file defines that other files can call (not static). */
+  exportedFunctions(): string[] {
+    return [...this.functions.keys()].filter((n) => !this.staticFunctions.has(n));
+  }
+
+  /** True for a function this file defines as static (its name means something else in other files). */
+  isStaticFunction(name: string): boolean {
+    return this.staticFunctions.has(name);
+  }
+
+  /**
+   * Every direct call in the file of a function that is not static here, with the argument values (each caller
+   * solved once, with real return values) and, for array arguments, their length. For the project index.
+   */
+  callRecords(): Map<string, CallRecord[]> {
+    return withCache(this.syntax, () => {
+      const out = new Map<string, CallRecord[]>();
+      for (const fn of this.functionNodes()) {
+        const fa = this.analysis(fn, "args");
+        if (!fa.solve().ok) {
+          continue;
+        }
+        const caller = functionName(fn) || "a function";
+        const seen = new Map<number, CallRecord & { name: string }>();
+        fa.replay({
+          call: (at, name, args) => {
+            if (this.staticFunctions.has(name) || fa.model.locals.has(name)) {
+              return;
+            }
+            const old = seen.get(at.id);
+            if (old) {
+              seen.set(at.id, { ...old, args: old.args.map((v, i) => (args[i] ? join(v, args[i]) : v)) });
+              return;
+            }
+            const nodes = (at.childForFieldName("arguments")?.namedChildren ?? []).filter((a): a is Node => a !== null && a.type !== "comment");
+            const lengths = nodes.map((a) => (a.type === "identifier" || a.type === "field_expression" ? this.decls.arrayLength(fa.typing.of(a)) : undefined));
+            seen.set(at.id, { name, caller, args, lengths, texts: nodes.map((a) => a.text.replace(/\s+/g, " ")) });
+          },
+        });
+        for (const r of seen.values()) {
+          const list = out.get(r.name) ?? [];
+          list.push(r);
+          out.set(r.name, list);
+        }
+      }
+      return out;
+    });
+  }
+
+  /** Names of functions used other than in a direct call (function pointers): their callers are not all known. */
+  escapedFunctions(): Set<string> {
+    const out = new Set<string>();
+    for (const id of this.nodes("identifier")) {
+      const p = id.parent;
+      if (!p || (p.type === "call_expression" && p.childForFieldName("function")?.id === id.id) || /declarator$/.test(p.type)) {
+        continue;
+      }
+      if (this.decls.hasFunction(id.text) || this.functions.has(id.text)) {
+        out.add(id.text);
+      }
+    }
+    return out;
   }
 
   /** All function definitions of the file, in source order. */
@@ -221,7 +305,7 @@ export class FileEngine {
    */
   check<T>(fn: Node, run: (fa: FunctionAnalysis) => T[]): { fa: FunctionAnalysis; results: T[] } {
     return withCache(this.syntax, () => {
-      if (this.budget.fileMillis !== undefined && Date.now() - this.started > this.budget.fileMillis) {
+      if (this.budget.fileMillis !== undefined && budgetNow() - this.started > this.budget.fileMillis) {
         return { fa: this.skipped(fn, "file time budget exceeded"), results: [] };
       }
       let usedLazy = false;
@@ -261,7 +345,7 @@ export class FileEngine {
    * solved again with the real values. Most functions never need the summaries.
    */
   private analyzeNow(fn: Node, observer: Observer): FunctionAnalysis {
-    if (this.budget.fileMillis !== undefined && Date.now() - this.started > this.budget.fileMillis) {
+    if (this.budget.fileMillis !== undefined && budgetNow() - this.started > this.budget.fileMillis) {
       const fa = this.analysis(fn, "check");
       fa.outcome = { ok: false, reason: "file time budget exceeded", visits: 0 };
       this.stats.skipped++;
@@ -331,19 +415,28 @@ export class FileEngine {
         if (mode === "stores") {
           return undefined;
         }
+        const own = this.functions.has(name);
+        const remote = !own && this.knowledge !== undefined && this.knowledge.definesElsewhere(name, this.file);
         if (mode === "lazy") {
-          if (!this.functions.has(name)) {
+          if (!own && !remote) {
             return undefined;
           }
           onLazy?.();
           return this.decls.scalarOf(this.decls.returnType(name))?.kind === "ptr" ? LAZY_POINTER : LAZY_RESULT;
         }
-        return this.computeReturn(name);
+        return own ? this.computeReturn(name) : remote ? this.knowledge!.returnOf(name, this.file) : undefined;
       },
       paramValue: (fnName, info) => {
         if (mode === "summary") {
           // A return value computed from parameters says nothing about one caller's arguments: unbacked bounds.
           return wild(ofType(info.type));
+        }
+        if (mode === "args" || mode === "stores") {
+          return this.paramValue(fnName, info);
+        }
+        const fromProject = this.projectParam(fnName, info);
+        if (fromProject) {
+          return fromProject;
         }
         if (mode === "lazy" && this.usesCallSites(fnName, info)) {
           onLazy?.();
@@ -351,7 +444,101 @@ export class FileEngine {
         }
         return this.paramValue(fnName, info);
       },
+      paramLength: (fnName, info) => (mode === "check" || mode === "lazy" ? this.projectLength(fnName, info) : undefined),
+      fieldZero: (tag, field) => (mode === "check" || mode === "lazy" ? this.knowledge?.fieldZero(tag, field) : undefined),
     };
+  }
+
+  // ---- project knowledge --------------------------------------------------------------------------
+
+  /**
+   * The array length callers pass for a pointer parameter. Not used when the function compares an integer
+   * parameter (`i < len`): then the caller passes the length too, and only a pair of both says whether an
+   * index can leave the array (the length-parameter rule in projectParam covers the case where all calls agree).
+   */
+  private projectLength(fnName: string, info: VarInfo): number | undefined {
+    const facts = this.projectFacts(fnName);
+    const n = facts?.minLength[info.index];
+    if (!facts || n === undefined) {
+      return undefined;
+    }
+    const fn = this.functions.get(fnName);
+    const compared = fn ? this.comparedParams(fn) : new Set<string>();
+    if (compared.size === 0) {
+      return n;
+    }
+    const model = fn ? this.modelFor(fn) : undefined;
+    const paired = [...(model?.tracked.values() ?? [])].some((p) => p.param && compared.has(p.name) && this.projectParam(fnName, p) !== undefined && facts.sameLength[info.index] !== undefined);
+    return paired ? n : undefined;
+  }
+
+  private readonly compared = new Map<number, Set<string>>();
+
+  /** Integer parameters of `fn` that some comparison (<, <=, >, >=) in its body uses. */
+  private comparedParams(fn: Node): Set<string> {
+    let out = this.compared.get(fn.id);
+    if (!out) {
+      out = new Set();
+      const model = this.modelFor(fn);
+      for (const b of this.within(fn, "binary_expression")) {
+        if (!/^(<|<=|>|>=)$/.test(b.childForFieldName("operator")?.type ?? "")) {
+          continue;
+        }
+        for (const id of [b.childForFieldName("left"), b.childForFieldName("right")].flatMap((s) => (s ? [s, ...s.descendantsOfType("identifier")] : []))) {
+          const info = id && id.type === "identifier" ? model.tracked.get(id.text) : undefined;
+          if (info?.param && info.type.kind === "int") {
+            out.add(info.name);
+          }
+        }
+      }
+      this.compared.set(fn.id, out);
+    }
+    return out;
+  }
+
+  /**
+   * For the project index: the return value of an exported function as evidence for other files. A NULL / 0
+   * that only some parameter values lead to (`return (i < n) ? &t[i] : NULL;`) is dropped: the caller may well
+   * pass only valid values, and without relating both sides that is no evidence.
+   */
+  exportedReturn(name: string): Value | undefined {
+    const v = this.returnSummary(name);
+    const fn = this.functions.get(name);
+    if (!v || v.zero === undefined || !fn) {
+      return v;
+    }
+    const params = [...this.modelFor(fn).tracked.values()].filter((p) => p.param).map((p) => p.name);
+    const conditions = fn.descendantsOfType(["parenthesized_expression", "conditional_expression", "condition_clause"])
+      .filter((n): n is Node => n !== null)
+      .filter((n) => n.type !== "parenthesized_expression" || /^(if|while|do|switch)_statement$/.test(n.parent?.type ?? ""))
+      .map((n) => (n.type === "conditional_expression" ? n.childForFieldName("condition") : n))
+      .filter((n): n is Node => n !== null);
+    const guarded = conditions.some((c) => [c, ...c.descendantsOfType("identifier")].some((id) => id !== null && id.type === "identifier" && params.includes(id.text)));
+    return guarded ? withZero(v, undefined) : v;
+  }
+
+  private projectFacts(fnName: string) {
+    return this.knowledge && !this.staticFunctions.has(fnName) ? this.knowledge.callFacts(fnName) : undefined;
+  }
+
+  /**
+   * A parameter of a function other files can call, from the project's calls: a pointer that some caller can
+   * pass as NULL; a length parameter (every call passes exactly the length of the array it passes for another
+   * parameter, one and the same length). Otherwise undefined: the parameter stays "anything a caller passes".
+   */
+  private projectParam(fnName: string, info: VarInfo): Value | undefined {
+    const facts = this.projectFacts(fnName);
+    const arg = facts?.args[info.index];
+    if (!facts || !arg) {
+      return undefined;
+    }
+    if (info.type.kind === "ptr") {
+      return arg.zero !== undefined && arg.lo === 0 ? withZero(unknown("ptr"), arg.zero) : undefined;
+    }
+    if (info.type.kind === "int" && arg.lo === arg.hi && facts.sameLength.some((n, j) => j !== info.index && n !== undefined && isExact(arg, n))) {
+      return exact(arg.lo);
+    }
+    return undefined;
   }
 
   // ---- static objects -----------------------------------------------------------------------------
@@ -366,7 +553,26 @@ export class FileEngine {
         break;
       }
     }
+    // The object was overwritten as a whole with a value from elsewhere (`wcal = *calib`): its fields can hold
+    // whatever the project puts into such a struct, e.g. an explicit 0 in an initializer.
+    if (why === undefined && this.knowledge && path.includes(".") && this.opaque.has(root)) {
+      const dot = path.lastIndexOf(".");
+      const tag = this.decls.structTag(this.pathType(path.slice(0, dot)));
+      why = tag ? this.knowledge.fieldZero(tag, path.slice(dot + 1)) : undefined;
+    }
     return withZero(unknown(), why);
+  }
+
+  /** The declared C type of an object path under a static object (`wcal.ticks_per_rev`). */
+  private pathType(path: string) {
+    const [root, ...fields] = path.split(".");
+    let t = this.decls.varType(root);
+    for (const f of fields) {
+      const r = this.decls.resolve(t);
+      t = this.decls.field(r?.k === "array" ? r.of : t, f);
+    }
+    const r = this.decls.resolve(t);
+    return r?.k === "array" ? r.of : t;
   }
 
   /** Reasons a store in this file can put 0 at `path` (an object path under the static object `root`). */
@@ -443,6 +649,9 @@ export class FileEngine {
     }
     fa.replay({
       store: (path, value, at) => {
+        if (!path.includes(".") && value.wl && value.wh && value.zero === undefined && at.type === "assignment_expression") {
+          this.opaque.add(path);
+        }
         if (value.zero !== undefined) {
           const why = value.zero.startsWith("set to 0 by memset") ? value.zero : `${fa.name}() stores ${describe(value.zero)} at line ${at.startPosition.row + 1}`;
           const list = stores.get(path) ?? [];

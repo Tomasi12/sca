@@ -286,6 +286,8 @@ export class MonitorController implements vscode.Disposable {
     // A saved header can change macros and #if branches of every file that includes it.
     if (/.(h|hh|hpp|hxx)$/i.test(file) && this.tracked.size > 0) {
       this.projects.headerChanged(file);
+    } else if (isSourceFile(file)) {
+      this.projects.sourceChanged(file);
     }
     if (this.isTracked(file)) {
       this.scheduler.schedule(file);
@@ -294,6 +296,7 @@ export class MonitorController implements vscode.Disposable {
 
   /** A C/C++ file was created, deleted or renamed: the expanded file list of a monitored folder may change. */
   private onFilesChanged(uris: readonly vscode.Uri[]): void {
+    this.projects.sourcesChanged(uris.map((u) => u.fsPath).filter(isSourceFile));
     if (uris.some((u) => this.monitor.isMonitored(u.fsPath) && (isSourceFile(u.fsPath) || this.isTracked(u.fsPath)))) {
       void this.refresh();
     }
